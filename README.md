@@ -26,3 +26,8 @@ Userscript that replaces Japanese Rush Duel card/deck data on Konami Rush DB pag
 ## Future Plans
 Proper manual translation of the "Registered Category" card archetypes in the deck search page.
 Currently it is mostly automated and many names are wrong.
+
+<img width="980" height="934" alt="image" src="https://github.com/user-attachments/assets/2fe3c1b0-5263-48db-92cb-565a6437c766" />
+<img width="976" height="773" alt="image" src="https://github.com/user-attachments/assets/a82aa835-f019-4d5e-a2b2-cfba2270915b" />
+<img width="980" height="1112" alt="image" src="https://github.com/user-attachments/assets/713f1542-82ef-4963-825f-1ec98daab695" />
+
