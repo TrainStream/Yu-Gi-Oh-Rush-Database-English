@@ -3706,21 +3706,16 @@
         return;
       }
 
-      const originalText = button.textContent;
       button.disabled = true;
       try {
         await copyTextToClipboard(makeYdke(deckYdkeCopyState.deck));
-        button.textContent = "Copied YDKE";
-        setTimeout(() => {
-          button.disabled = false;
-          button.textContent = originalText;
-        }, 1600);
+        button.disabled = false;
       } catch (error) {
         console.error("[RushDB Yugipedia English] Could not copy YDKE", error);
         button.disabled = false;
         button.textContent = "Copy failed";
         setTimeout(() => {
-          button.textContent = originalText;
+          button.textContent = isDeckExportUnavailable(deckYdkeCopyState) ? "YDKE unavailable" : "Copy YDKE";
         }, 2000);
       }
     });
