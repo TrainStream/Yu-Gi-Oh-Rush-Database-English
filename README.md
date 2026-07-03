@@ -20,7 +20,7 @@ Userscript that replaces Japanese Rush Duel card/deck data on Konami Rush DB pag
 * [`db.yugioh-card.com/rushdb/card_search.action`](https://www.db.yugioh-card.com/rushdb/card_search.action)
 * including any individual card page or booster pack list
 * [`db.yugioh-card.com/rushdb/deck_search.action`](https://www.db.yugioh-card.com/rushdb/deck_search.action?request_locale=ja)
-* `db.yugioh-card.com/rushdb/member_deck.action` (any user uploaded deck from the above page)
+* `db.yugioh-card.com/rushdb/member_deck.action` (any user uploaded deck list from the above page)
 * [`db.yugioh-card.com/rushdb/forbidden_limited.action`](https://www.db.yugioh-card.com/rushdb/forbidden_limited.action)
 
 ## Future Plans
