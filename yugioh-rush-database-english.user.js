@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Yu-Gi-Oh! Rush Database English
 // @namespace    local.rushdb.yugipedia-english
-// @version      0.2.0
+// @version      0.3.0
 // @description  Replaces Japanese Rush Duel card details on Konami card pages with English data from the hosted database, falling back to Yugipedia.
 // @author	 TrainStream
 // Written with Codex assistance.
