@@ -9,6 +9,7 @@ Userscript that replaces Japanese Rush Duel card/deck data on Konami Rush DB pag
 * Uses cached English card data
 * Toggle translation on/off
 * Optional deck category/tag sorting
+* Export deck pages to .ydk files or copy them as ydke:// URLs
 
 ## Install
 
