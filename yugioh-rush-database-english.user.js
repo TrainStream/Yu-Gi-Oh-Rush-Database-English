@@ -21,8 +21,8 @@
 // @grant        GM.getValue
 // @grant        GM.setValue
 // @run-at       document-idle
-// @updateURL    https://github.com/TrainStream/Yu-Gi-Oh-Rush-Database-English/raw/refs/heads/main/yugioh-rush-database-english.meta.js
-// @downloadURL  https://github.com/TrainStream/Yu-Gi-Oh-Rush-Database-English/raw/refs/heads/main/yugioh-rush-database-english.user.js
+// @updateURL    https://raw.githubusercontent.com/TrainStream/Yu-Gi-Oh-Rush-Database-English/main/yugioh-rush-database-english.meta.js
+// @downloadURL  https://raw.githubusercontent.com/TrainStream/Yu-Gi-Oh-Rush-Database-English/main/yugioh-rush-database-english.user.js
 // ==/UserScript==
 
 (function () {
