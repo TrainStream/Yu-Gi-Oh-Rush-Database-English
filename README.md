@@ -14,7 +14,7 @@ Userscript that replaces Japanese Rush Duel card/deck data on Konami Rush DB pag
 ## Install
 
 1. Install a userscript manager such as [Tampermonkey](https://www.tampermonkey.net/) or [Violentmonkey](https://violentmonkey.github.io/).
-2. Open [`yugioh-rush-database-english.user.js (click here)`](https://github.com/TrainStream/Yu-Gi-Oh-Rush-Database-English/releases/download/0.2/yugioh-rush-database-english.user.js) from this repo and click **Install**.
+2. Open [`yugioh-rush-database-english.user.js (click here)`](https://github.com/TrainStream/Yu-Gi-Oh-Rush-Database-English/releases/download/0.3/yugioh-rush-database-english.user.js) from this repo and click **Install**.
 
 [Check out my EDOPro Standard/Rush HD Pics Downloader!](https://github.com/TrainStream/EDOPro-Standard-Rush-HD-Pics-Downloader)
 
