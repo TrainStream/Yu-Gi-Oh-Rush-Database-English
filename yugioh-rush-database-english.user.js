@@ -50,7 +50,7 @@
   const CARD_LOOKUP_DETAIL_TIMEOUT_MS = 20000;
   const HOSTED_DATABASE_TIMEOUT_MS = 30000;
   const CARD_LOOKUP_TIMEOUT_BUFFER_MS = 3000;
-
+  const EDOPRO_RUSH_CARD_IDS_XLSX_URL = "https://raw.githubusercontent.com/TrainStream/Yu-Gi-Oh-Rush-Database-English/main/Database/edopro-rush-card-ids.xlsx";
   const params = new URLSearchParams(location.search);
   const cid = params.get("cid");
   const ope = params.get("ope");
@@ -66,6 +66,8 @@
   const deckOriginals = new Map();
   const inFlightCardLookups = new Map();
   let hostedDatabasePromise = null;
+  let edoproRushCardsPromise = null;
+  let deckYdkeCopyState = null;
 
   function forceVersionNoticeForTesting() {
     return false;
@@ -213,8 +215,10 @@
   async function translateDeckPage() {
     translateLimitBadges();
     const translatedLabels = translateDeckStaticLabels();
+    const deckYdkeEntries = getDeckYdkeEntries();
     const cardIds = getDeckCardIds();
     if (cardIds.length === 0) {
+      deckYdkeCopyState = null;
       setStatus("No deck cards found to translate.", translatedLabels === 0);
       return;
     }
@@ -224,15 +228,20 @@
     const cardsById = await getDeckCardData(cardIds, (databaseId, card) => {
       translatedRows += applyDeckCardTranslation(databaseId, card);
     });
+    deckYdkeCopyState = await getDeckYdkeCopyState(deckYdkeEntries, cardsById);
     setStatus(
       buildCardBatchStatus(`Translated ${translatedRows} deck rows (${cardsById.size}/${cardIds.length} unique cards).`, cardsById),
       hasFailedLookups(cardsById),
       null,
       buildRetryAction(cardsById, "deck", setStatus, (databaseId, card) => {
         translatedRows += applyDeckCardTranslation(databaseId, card);
-      }, (retryCardsById) => {
+      }, async (retryCardsById) => {
+        retryCardsById.forEach((card, databaseId) => {
+          cardsById.set(databaseId, card);
+        });
+        deckYdkeCopyState = await getDeckYdkeCopyState(deckYdkeEntries, cardsById);
         setStatus(
-          buildCardBatchStatus(`Translated ${translatedRows} deck rows (${cardsById.size + retryCardsById.size}/${cardIds.length} unique cards).`, retryCardsById),
+          buildCardBatchStatus(`Translated ${translatedRows} deck rows (${cardsById.size}/${cardIds.length} unique cards).`, retryCardsById),
           hasFailedLookups(retryCardsById),
           null,
           buildRetryAction(retryCardsById, "deck", setStatus, (databaseId, card) => {
@@ -949,6 +958,136 @@
     });
   }
 
+  function requestArrayBuffer(url, options) {
+    const timeoutMs = options && options.timeoutMs ? options.timeoutMs : CARD_LOOKUP_DETAIL_TIMEOUT_MS;
+    return new Promise((resolve, reject) => {
+      const gm4Request = typeof GM !== "undefined" && GM.xmlHttpRequest;
+      const gm3Request = typeof GM_xmlhttpRequest !== "undefined" && GM_xmlhttpRequest;
+      const requester = gm4Request || gm3Request;
+
+      if (requester) {
+        requester({
+          method: "GET",
+          url,
+          timeout: timeoutMs,
+          responseType: "arraybuffer",
+          onload: (response) => {
+            if (response.status >= 200 && response.status < 300) {
+              resolve(response.response);
+            } else {
+              reject(new Error(`HTTP ${response.status} for ${url}`));
+            }
+          },
+          onerror: () => reject(new Error(`Request failed for ${url}`)),
+          ontimeout: () => reject(new Error(`Request timed out after ${timeoutMs}ms for ${url}`)),
+        });
+        return;
+      }
+
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+      fetch(url, { credentials: "omit", signal: controller ? controller.signal : undefined })
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status} for ${url}`);
+          }
+          return response.arrayBuffer();
+        })
+        .finally(() => {
+          if (timeoutId) {
+            clearTimeout(timeoutId);
+          }
+        })
+        .then(resolve, reject);
+    });
+  }
+
+  async function readZipTextFile(arrayBuffer, fileName, optional) {
+    const bytes = new Uint8Array(arrayBuffer);
+    const entry = findZipEntry(bytes, fileName);
+    if (!entry) {
+      if (optional) {
+        return "";
+      }
+      throw new Error(`XLSX file is missing ${fileName}.`);
+    }
+
+    const compressed = bytes.subarray(entry.dataOffset, entry.dataOffset + entry.compressedSize);
+    let fileBytes = null;
+    if (entry.compressionMethod === 0) {
+      fileBytes = compressed;
+    } else if (entry.compressionMethod === 8) {
+      fileBytes = await inflateRawBytes(compressed);
+    } else {
+      throw new Error(`Unsupported XLSX ZIP compression method ${entry.compressionMethod}.`);
+    }
+
+    return new TextDecoder("utf-8").decode(fileBytes);
+  }
+
+  function findZipEntry(bytes, fileName) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const eocdOffset = findZipEndOfCentralDirectory(bytes);
+    if (eocdOffset < 0) {
+      throw new Error("Could not read XLSX ZIP directory.");
+    }
+
+    const centralDirectorySize = view.getUint32(eocdOffset + 12, true);
+    const centralDirectoryOffset = view.getUint32(eocdOffset + 16, true);
+    let offset = centralDirectoryOffset;
+    const endOffset = centralDirectoryOffset + centralDirectorySize;
+
+    while (offset < endOffset && view.getUint32(offset, true) === 0x02014b50) {
+      const compressionMethod = view.getUint16(offset + 10, true);
+      const compressedSize = view.getUint32(offset + 20, true);
+      const fileNameLength = view.getUint16(offset + 28, true);
+      const extraLength = view.getUint16(offset + 30, true);
+      const commentLength = view.getUint16(offset + 32, true);
+      const localHeaderOffset = view.getUint32(offset + 42, true);
+      const name = decodeZipAscii(bytes.subarray(offset + 46, offset + 46 + fileNameLength));
+
+      if (name === fileName) {
+        const localFileNameLength = view.getUint16(localHeaderOffset + 26, true);
+        const localExtraLength = view.getUint16(localHeaderOffset + 28, true);
+        return {
+          compressionMethod,
+          compressedSize,
+          dataOffset: localHeaderOffset + 30 + localFileNameLength + localExtraLength,
+        };
+      }
+
+      offset += 46 + fileNameLength + extraLength + commentLength;
+    }
+
+    return null;
+  }
+
+  function findZipEndOfCentralDirectory(bytes) {
+    for (let offset = bytes.length - 22; offset >= 0 && offset >= bytes.length - 0xffff - 22; offset -= 1) {
+      if (bytes[offset] === 0x50 && bytes[offset + 1] === 0x4b && bytes[offset + 2] === 0x05 && bytes[offset + 3] === 0x06) {
+        return offset;
+      }
+    }
+    return -1;
+  }
+
+  function decodeZipAscii(bytes) {
+    let text = "";
+    bytes.forEach((byte) => {
+      text += String.fromCharCode(byte);
+    });
+    return text;
+  }
+
+  async function inflateRawBytes(bytes) {
+    if (typeof DecompressionStream === "undefined") {
+      throw new Error("This browser cannot decompress the online EDOPro XLSX file.");
+    }
+
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+
   function applyEnglishData(card) {
     const display = getCardDisplayData(card);
 
@@ -1037,6 +1176,382 @@
     });
 
     return Array.from(ids);
+  }
+
+  function getDeckYdkeEntries() {
+    const entries = [];
+    const sections = [
+      { part: "main", selector: "#monster_list, #spell_list, #trap_list" },
+      { part: "extra", selector: "#extra_list" },
+      { part: "side", selector: "#side_list" },
+    ];
+
+    sections.forEach((section) => {
+      document.querySelectorAll(section.selector).forEach((table) => {
+        table.querySelectorAll("tr").forEach((row) => {
+          const input = row.querySelector("input.link_value");
+          if (!input) {
+            return;
+          }
+
+          const nameNode = getDeckTextNameNode(row);
+          const japaneseName = cleanText(nameNode && nameNode.textContent) || cleanText(row.title);
+          const databaseId = extractCid(input.value || "");
+          const quantity = getDeckTextRowQuantity(row);
+          if (!japaneseName || !databaseId || quantity < 1) {
+            return;
+          }
+
+          entries.push({
+            part: section.part,
+            japaneseName,
+            databaseId,
+            quantity,
+          });
+        });
+      });
+    });
+
+    if (entries.length > 0) {
+      return entries;
+    }
+
+    return getDeckYdkeEntriesFromDetailText();
+  }
+
+  function getDeckYdkeEntriesFromDetailText() {
+    const entries = [];
+    const sections = [
+      { part: "main", selector: "#detailtext_main" },
+      { part: "extra", selector: "#detailtext_ext" },
+      { part: "side", selector: "#detailtext_side" },
+    ];
+
+    sections.forEach((section) => {
+      const root = document.querySelector(section.selector);
+      if (!root) {
+        return;
+      }
+
+      root.querySelectorAll(".t_row").forEach((row) => {
+        const input = row.querySelector("input.link_value");
+        const nameNode = row.querySelector(".box_card_name .card_name");
+        const japaneseName = cleanText(nameNode && nameNode.textContent);
+        const databaseId = extractCid(input && input.value);
+        const quantity = getDeckDetailRowQuantity(row);
+        if (!japaneseName || !databaseId || quantity < 1) {
+          return;
+        }
+
+        entries.push({
+          part: section.part,
+          japaneseName,
+          databaseId,
+          quantity,
+        });
+      });
+    });
+
+    return entries;
+  }
+
+  function getDeckTextRowQuantity(row) {
+    const value = cleanText(row.querySelector("td.num span") && row.querySelector("td.num span").textContent)
+      || cleanText(row.querySelector("td.num") && row.querySelector("td.num").textContent);
+    return parseDeckQuantity(value);
+  }
+
+  function getDeckDetailRowQuantity(row) {
+    const directQuantity = Array.from(row.children).find((child) => child.classList && child.classList.contains("cards_num_set"));
+    const value = cleanText(directQuantity && directQuantity.textContent);
+    return parseDeckQuantity(value);
+  }
+
+  function parseDeckQuantity(value) {
+    const match = String(value || "").match(/\d+/);
+    const quantity = match ? Number(match[0]) : 1;
+    return Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
+  }
+
+  async function getDeckYdkeCopyState(entries, cardsById) {
+    if (!entries || entries.length === 0) {
+      return null;
+    }
+
+    try {
+      return await buildDeckYdkeCopyState(entries, cardsById);
+    } catch (error) {
+      console.warn("[RushDB Yugipedia English] Could not load EDOPro card IDs", error);
+      return {
+        deck: { main: [], extra: [], side: [] },
+        missing: [],
+        ambiguous: [],
+        totalCards: entries.reduce((total, entry) => total + entry.quantity, 0),
+        copiedCards: 0,
+        loadError: error,
+      };
+    }
+  }
+
+  async function buildDeckYdkeCopyState(entries, cardsById) {
+    const deck = { main: [], extra: [], side: [] };
+    const missing = [];
+    const ambiguous = [];
+    let totalCards = 0;
+    const cardsByJapaneseName = await getEdoproRushCardsByJapaneseName();
+
+    entries.forEach((entry) => {
+      totalCards += entry.quantity;
+      const resolution = resolveEdoproRushCardId(entry, cardsById, cardsByJapaneseName);
+      if (!resolution.id) {
+        missing.push(entry);
+        return;
+      }
+
+      if (resolution.ambiguous) {
+        ambiguous.push(entry);
+      }
+
+      for (let index = 0; index < entry.quantity; index += 1) {
+        deck[entry.part].push(resolution.id);
+      }
+    });
+
+    return {
+      deck,
+      missing,
+      ambiguous,
+      totalCards,
+      copiedCards: deck.main.length + deck.extra.length + deck.side.length,
+    };
+  }
+
+  function resolveEdoproRushCardId(entry, cardsById, cardsByJapaneseName) {
+    const candidates = cardsByJapaneseName.get(normalizeEdoproCardName(entry.japaneseName)) || [];
+    if (candidates.length === 0) {
+      return { id: 0, ambiguous: false };
+    }
+
+    if (candidates.length === 1) {
+      return { id: candidates[0].id, ambiguous: false };
+    }
+
+    const card = cardsById && cardsById.get(entry.databaseId);
+    const title = card ? normalizeEdoproEnglishName(getCardDisplayData(card).title) : "";
+    const exactEnglishMatches = title
+      ? candidates.filter((candidate) => normalizeEdoproEnglishName(candidate.englishName) === title)
+      : [];
+
+    if (exactEnglishMatches.length === 1) {
+      return { id: exactEnglishMatches[0].id, ambiguous: false };
+    }
+
+    const looseEnglishMatches = title
+      ? candidates.filter((candidate) => {
+        const candidateName = normalizeEdoproEnglishName(candidate.englishName).replace(/\(rush\)$/i, "").trim();
+        return candidateName && (candidateName === title || candidateName.replace(/[#.'-]/g, "") === title.replace(/[#.'-]/g, ""));
+      })
+      : [];
+
+    if (looseEnglishMatches.length === 1) {
+      return { id: looseEnglishMatches[0].id, ambiguous: false };
+    }
+
+    return { id: candidates[0].id, ambiguous: true };
+  }
+
+  async function getEdoproRushCardsByJapaneseName() {
+    if (!edoproRushCardsPromise) {
+      edoproRushCardsPromise = loadEdoproRushCardsByJapaneseName();
+    }
+    return edoproRushCardsPromise;
+  }
+
+  async function loadEdoproRushCardsByJapaneseName() {
+    const rows = await fetchEdoproRushCardIdRows();
+    const cardsByJapaneseName = new Map();
+    rows.forEach((row) => {
+      const id = Number(row[0]);
+      const englishName = String(row[1] || "");
+      const japaneseName = normalizeEdoproCardName(row[2]);
+      if (!id || !japaneseName) {
+        return;
+      }
+
+      const candidates = cardsByJapaneseName.get(japaneseName) || [];
+      candidates.push({ id, englishName });
+      cardsByJapaneseName.set(japaneseName, candidates);
+    });
+
+    return cardsByJapaneseName;
+  }
+
+  async function fetchEdoproRushCardIdRows() {
+    const workbook = await requestArrayBuffer(EDOPRO_RUSH_CARD_IDS_XLSX_URL, { timeoutMs: HOSTED_DATABASE_TIMEOUT_MS });
+    const sharedStringsXml = await readZipTextFile(workbook, "xl/sharedStrings.xml", true);
+    const sheetXml = await readZipTextFile(workbook, "xl/worksheets/sheet1.xml");
+    const sharedStrings = parseXlsxSharedStrings(sharedStringsXml);
+    return parseEdoproRushCardIdSheet(sheetXml, sharedStrings);
+  }
+
+  function parseXlsxSharedStrings(xmlText) {
+    if (!xmlText) {
+      return [];
+    }
+
+    const documentXml = new DOMParser().parseFromString(xmlText, "application/xml");
+    return Array.from(documentXml.getElementsByTagName("si")).map((item) => {
+      return Array.from(item.getElementsByTagName("t")).map((node) => node.textContent || "").join("");
+    });
+  }
+
+  function parseEdoproRushCardIdSheet(xmlText, sharedStrings) {
+    const documentXml = new DOMParser().parseFromString(xmlText, "application/xml");
+    const rows = [];
+    Array.from(documentXml.getElementsByTagName("row")).forEach((row, rowIndex) => {
+      if (rowIndex === 0) {
+        return;
+      }
+
+      const values = ["", "", ""];
+      Array.from(row.getElementsByTagName("c")).forEach((cell) => {
+        const reference = cell.getAttribute("r") || "";
+        const column = reference.match(/^[A-Z]+/);
+        const columnIndex = column ? xlsxColumnIndex(column[0]) : -1;
+        if (columnIndex < 0 || columnIndex > 2) {
+          return;
+        }
+
+        values[columnIndex] = getXlsxCellValue(cell, sharedStrings);
+      });
+
+      if (values[0] && values[2]) {
+        rows.push(values);
+      }
+    });
+    return rows;
+  }
+
+  function getXlsxCellValue(cell, sharedStrings) {
+    const valueNode = cell.getElementsByTagName("v")[0];
+    const inlineStringNode = cell.getElementsByTagName("t")[0];
+    const rawValue = valueNode ? valueNode.textContent || "" : "";
+    if (cell.getAttribute("t") === "s") {
+      return sharedStrings[Number(rawValue)] || "";
+    }
+    if (cell.getAttribute("t") === "inlineStr") {
+      return inlineStringNode ? inlineStringNode.textContent || "" : "";
+    }
+    return rawValue;
+  }
+
+  function xlsxColumnIndex(column) {
+    let index = 0;
+    for (let offset = 0; offset < column.length; offset += 1) {
+      index = index * 26 + column.charCodeAt(offset) - 64;
+    }
+    return index - 1;
+  }
+
+  function normalizeEdoproCardName(value) {
+    return cleanText(value).normalize ? cleanText(value).normalize("NFKC") : cleanText(value);
+  }
+
+  function normalizeEdoproEnglishName(value) {
+    return normalizeEdoproCardName(value)
+      .toLowerCase()
+      .replace(/\s+/g, " ");
+  }
+
+  function makeYdke(deck) {
+    return `ydke://${idsToYdkePart(deck.main || [])}!${idsToYdkePart(deck.extra || [])}!${idsToYdkePart(deck.side || [])}!`;
+  }
+
+  function makeYdk(deck, creator) {
+    const lines = [];
+    lines.push(`#created by ${creator || "https://github.com/TrainStream/Yu-Gi-Oh-Rush-Database-English/"}`);
+    lines.push("#main");
+    (deck.main || []).forEach((id) => lines.push(String(id)));
+    lines.push("#extra");
+    (deck.extra || []).forEach((id) => lines.push(String(id)));
+    lines.push("!side");
+    (deck.side || []).forEach((id) => lines.push(String(id)));
+    return `${lines.join("\n")}\n`;
+  }
+
+  function downloadTextFile(text, filename) {
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function getDeckExportFilename(extension) {
+    const title = getDeckExportTitle();
+    const slug = title
+      ? title.normalize("NFKC").replace(/[\\/:*?"<>|]+/g, "").replace(/\s+/g, "_").trim()
+      : "rush_deck";
+    return `${slug || "rush_deck"}.${extension}`;
+  }
+
+  function getDeckExportTitle() {
+    const candidates = [
+      document.querySelector("#broad_title h1 strong"),
+      document.querySelector("#broad_title h1"),
+      document.querySelector("#title_msg h1"),
+      document.querySelector("#title_msg"),
+    ];
+
+    for (const candidate of candidates) {
+      const title = cleanText(candidate && candidate.textContent);
+      if (title) {
+        return title;
+      }
+    }
+
+    return cleanText(document.title).replace(/\|.*$/, "").trim();
+  }
+
+  function idsToYdkePart(ids) {
+    const bytes = new Uint8Array(ids.length * 4);
+    const view = new DataView(bytes.buffer);
+    ids.forEach((id, index) => {
+      view.setUint32(index * 4, Number(id), true);
+    });
+
+    let binary = "";
+    const chunkSize = 0x8000;
+    for (let index = 0; index < bytes.length; index += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+    }
+
+    return btoa(binary);
+  }
+
+  async function copyTextToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "readonly");
+    textarea.style.cssText = [
+      "position: fixed",
+      "top: -9999px",
+      "left: -9999px",
+      "opacity: 0",
+    ].join(";");
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
   }
 
   function getCardListIds() {
@@ -3066,6 +3581,12 @@
 
     status.style.borderColor = isError ? "#a33" : "#0f5d8f";
     status.style.background = isError ? "#fff0f0" : "#eef8ff";
+    if (isDeckPage) {
+      status.style.display = "flex";
+      status.style.alignItems = "center";
+      status.style.gap = "6px";
+      status.style.flexWrap = "wrap";
+    }
     status.replaceChildren();
 
     if (url) {
@@ -3113,7 +3634,163 @@
       status.appendChild(button);
     }
 
+    appendDeckYdkDownloadButton(status);
+    appendDeckYdkeCopyButton(status);
     addSearchControlsMinimizeButton(status);
+  }
+
+  function appendDeckYdkDownloadButton(status) {
+    if (!isDeckPage || !deckYdkeCopyState) {
+      return;
+    }
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.id = "rushdb-yugipedia-download-ydk";
+    button.textContent = isDeckExportUnavailable(deckYdkeCopyState) ? "YDK unavailable" : "Download YDK";
+    button.disabled = isDeckExportUnavailable(deckYdkeCopyState);
+    button.title = getDeckYdkButtonTitle(deckYdkeCopyState);
+    button.style.cssText = getDeckExportButtonStyle("auto");
+
+    if (button.disabled) {
+      button.style.cursor = "not-allowed";
+      button.style.opacity = "0.7";
+    }
+
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (isDeckExportUnavailable(deckYdkeCopyState)) {
+        return;
+      }
+
+      button.disabled = true;
+      try {
+        downloadTextFile(makeYdk(deckYdkeCopyState.deck), getDeckExportFilename("ydk"));
+        button.disabled = false;
+      } catch (error) {
+        console.error("[RushDB Yugipedia English] Could not download YDK", error);
+        button.disabled = false;
+        button.textContent = "Download failed";
+        setTimeout(() => {
+          button.textContent = isDeckExportUnavailable(deckYdkeCopyState) ? "YDK unavailable" : "Download YDK";
+        }, 2000);
+      }
+    });
+
+    status.appendChild(button);
+  }
+
+  function appendDeckYdkeCopyButton(status) {
+    if (!isDeckPage || !deckYdkeCopyState) {
+      return;
+    }
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.id = "rushdb-yugipedia-copy-ydke";
+    button.textContent = isDeckExportUnavailable(deckYdkeCopyState) ? "YDKE unavailable" : "Copy YDKE";
+    button.disabled = isDeckExportUnavailable(deckYdkeCopyState);
+    button.title = getDeckYdkeButtonTitle(deckYdkeCopyState);
+    button.style.cssText = getDeckExportButtonStyle("");
+
+    if (button.disabled) {
+      button.style.cursor = "not-allowed";
+      button.style.opacity = "0.7";
+    }
+
+    button.addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (isDeckExportUnavailable(deckYdkeCopyState)) {
+        return;
+      }
+
+      const originalText = button.textContent;
+      button.disabled = true;
+      try {
+        await copyTextToClipboard(makeYdke(deckYdkeCopyState.deck));
+        button.textContent = "Copied YDKE";
+        setTimeout(() => {
+          button.disabled = false;
+          button.textContent = originalText;
+        }, 1600);
+      } catch (error) {
+        console.error("[RushDB Yugipedia English] Could not copy YDKE", error);
+        button.disabled = false;
+        button.textContent = "Copy failed";
+        setTimeout(() => {
+          button.textContent = originalText;
+        }, 2000);
+      }
+    });
+
+    status.appendChild(button);
+  }
+
+  function isDeckExportUnavailable(state) {
+    return !state || Boolean(state.loadError) || state.missing.length > 0;
+  }
+
+  function getDeckExportButtonStyle(marginLeft) {
+    return [
+      marginLeft ? `margin-left: ${marginLeft}` : "",
+      "padding: 2px 8px",
+      "border: 1px solid #0f5d8f",
+      "border-radius: 3px",
+      "background: #fff",
+      "color: #10384f",
+      "font-size: 12px",
+      "line-height: 1.3",
+      "cursor: pointer",
+      "white-space: nowrap",
+    ].filter(Boolean).join(";");
+  }
+
+  function getDeckYdkButtonTitle(state) {
+    const baseTitle = getDeckExportProblemTitle(state);
+    if (baseTitle) {
+      return baseTitle;
+    }
+
+    const warning = state.ambiguous.length > 0
+      ? ` ${state.ambiguous.length} duplicate-name match${state.ambiguous.length === 1 ? "" : "es"} used the first spreadsheet ID.`
+      : "";
+    return `Download .ydk file for EDOPro (${state.copiedCards}/${state.totalCards} cards).${warning}`;
+  }
+
+  function getDeckYdkeButtonTitle(state) {
+    const baseTitle = getDeckExportProblemTitle(state);
+    if (baseTitle) {
+      return baseTitle;
+    }
+
+    const warning = state.ambiguous.length > 0
+      ? ` ${state.ambiguous.length} duplicate-name match${state.ambiguous.length === 1 ? "" : "es"} used the first spreadsheet ID.`
+      : "";
+    return `Copy ydke:// URL for EDOPro (${state.copiedCards}/${state.totalCards} cards).${warning}`;
+  }
+
+  function getDeckExportProblemTitle(state) {
+    if (!state) {
+      return "";
+    }
+
+    if (state.loadError) {
+      return "Could not load EDOPro Rush card IDs from the online XLSX.";
+    }
+
+    if (state.missing.length > 0) {
+      return `Missing EDOPro card IDs: ${formatYdkeProblemCards(state.missing)}`;
+    }
+
+    return "";
+  }
+
+  function formatYdkeProblemCards(entries) {
+    const names = Array.from(new Set(entries.map((entry) => entry.japaneseName))).slice(0, 6);
+    const suffix = entries.length > names.length ? `, and ${entries.length - names.length} more` : "";
+    return `${names.join(", ")}${suffix}`;
   }
 
   function setRelatedStatus(message, isError, retryAction) {
