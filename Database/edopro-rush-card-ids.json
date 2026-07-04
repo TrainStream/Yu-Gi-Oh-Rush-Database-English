@@ -1194,7 +1194,7 @@
     {
       "id": 160005017,
       "name": "Fortitude Dragon",
-      "japanese_name": "執念の竜"
+      "japanese_name": "竜の執念"
     },
     {
       "id": 160005018,
@@ -1594,7 +1594,7 @@
     {
       "id": 160006031,
       "name": "Assault Cannon",
-      "japanese_name": "アサルト・アルマート"
+      "japanese_name": "アサルト・キャノン・ビートル"
     },
     {
       "id": 160006032,
@@ -1904,12 +1904,12 @@
     {
       "id": 160007027,
       "name": "Player #99: Grand Slam Dragon",
-      "japanese_name": "背番号９９ 球児皇龍ホームグランドラ"
+      "japanese_name": "デュエリスト"
     },
     {
       "id": 160007028,
       "name": "Player #39: Home Run Hitter",
-      "japanese_name": "背番号３９ 球児皇ホーム"
+      "japanese_name": "デュエリスト"
     },
     {
       "id": 160007029,
@@ -2179,7 +2179,7 @@
     {
       "id": 160008016,
       "name": "Player #C39: Home Run Smasher",
-      "japanese_name": "Ｃ背番号３９ 球児皇ホームプレート"
+      "japanese_name": "デュエリスト"
     },
     {
       "id": 160008017,
@@ -3519,12 +3519,12 @@
     {
       "id": 160012020,
       "name": "Soleil the Skysavior Angel",
-      "japanese_name": "デュエルマーカー"
+      "japanese_name": "蒼救天使 ソレイル"
     },
     {
       "id": 160012021,
       "name": "Lua the Skysavior Angel",
-      "japanese_name": "デュエルマーカー"
+      "japanese_name": "蒼救天使 ルーア"
     },
     {
       "id": 160012022,
@@ -4739,7 +4739,7 @@
     {
       "id": 160015064,
       "name": "Skysavior Wish",
-      "japanese_name": "デュエルマーカー"
+      "japanese_name": "蒼救の願い"
     },
     {
       "id": 160015065,
@@ -9064,7 +9064,7 @@
     {
       "id": 160204050,
       "name": "Fusion",
-      "japanese_name": "フュージョン・ゲート"
+      "japanese_name": "フュージョン"
     },
     {
       "id": 160205003,
@@ -9799,7 +9799,7 @@
     {
       "id": 160208002,
       "name": "Harpie Lady Sisters",
-      "japanese_name": "ハーピィ・レディ三姉妹"
+      "japanese_name": "ハーピィ三姉妹"
     },
     {
       "id": 160208003,
@@ -10649,17 +10649,17 @@
     {
       "id": 160211032,
       "name": "Alpha the Eternal Magnet Warrior",
-      "japanese_name": "永久磁石の戦士α"
+      "japanese_name": "磁石の戦士α"
     },
     {
       "id": 160211033,
       "name": "Beta the Eternal Magnet Warrior",
-      "japanese_name": "永久磁石の戦士β"
+      "japanese_name": "磁石の戦士β"
     },
     {
       "id": 160211034,
       "name": "Gamma the Eternal Magnet Warrior",
-      "japanese_name": "永久磁石の戦士γ"
+      "japanese_name": "磁石の戦士γ"
     },
     {
       "id": 160211035,
@@ -11059,7 +11059,7 @@
     {
       "id": 160212074,
       "name": "Star of the Beginning",
-      "japanese_name": "はじまりの星域"
+      "japanese_name": "はじまりの星"
     },
     {
       "id": 160212075,
@@ -12524,7 +12524,7 @@
     {
       "id": 160219028,
       "name": "Player #C39: Home Run Smasher V",
-      "japanese_name": "Ｃ背番号３９ 球児皇ホームプレートＶ"
+      "japanese_name": "デュエリスト"
     },
     {
       "id": 160219031,
