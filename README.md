@@ -1,7 +1,7 @@
 # Yu-Gi-Oh! Rush Duel Database in English
 Warning! AI slop! But it works!
 
-Userscript that replaces Japanese Rush Duel card/deck data on Konami Rush DB pages with English data from the hosted database exported from [Yugipedia.com](https://yugipedia.com/wiki/Yugipedia), with [Yugipedia](https://yugipedia.com/wiki/Yugipedia) itself as a fallback.
+Userscript that replaces Japanese Rush Duel card/deck data on Konami Rush DB pages with English data from from [Yugipedia.com](https://yugipedia.com/wiki/Yugipedia)
 
 ## Features
 
@@ -9,7 +9,8 @@ Userscript that replaces Japanese Rush Duel card/deck data on Konami Rush DB pag
 * Uses cached English card data
 * Toggle translation on/off
 * Optional deck category/tag sorting
-* Export deck pages to EDOPro .ydk files or copy them as ydke:// URLs
+* Export deck pages to EDOPro .ydk files or copy them as ydke:// URLs (card id database hosted in this repository) 
+* This repository hosts an exported Yugipedia card database. The script checks it first, then falls back to Yugipedia for missing cards. This is because Yugipedia is often unstable.
 
 ## Install
 
