@@ -33,5 +33,4 @@ Currently it is mostly automated and many names are wrong.
 
 <img width="971" height="940" alt="image" src="https://github.com/user-attachments/assets/9cb22a4b-2a08-4f11-9bdf-94351b9d05ef" />
 <img width="976" height="773" alt="image" src="https://github.com/user-attachments/assets/a82aa835-f019-4d5e-a2b2-cfba2270915b" />
-<img width="980" height="1112" alt="image" src="https://github.com/user-attachments/assets/713f1542-82ef-4963-825f-1ec98daab695" />
 
