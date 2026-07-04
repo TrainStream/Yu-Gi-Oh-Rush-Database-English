@@ -8,7 +8,7 @@ Userscript that replaces Japanese Rush Duel card/deck data on Konami Rush DB pag
 * Translates card details, card lists, decks, and search labels
 * Uses cached English card data
 * Toggle translation on/off
-* Optional deck category/tag sorting
+* Optional alphabetical sorting for the translated deck category/tag labels on the deck search page 
 * Export deck pages to EDOPro .ydk files or copy them as ydke:// URLs (card id database hosted in this repository) 
 * This repository hosts an exported Yugipedia card database. The script checks it first, then falls back to Yugipedia for missing cards. This is because Yugipedia is often unstable.
 
