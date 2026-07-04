@@ -3550,7 +3550,7 @@
       const ydke = makeYdke(deckYdkeCopyState.deck);
       try {
         await copyTextToClipboard(ydke);
-        showDeckExportNotice("YDKE copied to clipboard.");
+        showDeckExportNotice(getDeckExportSuccessMessage("YDKE copied to clipboard."));
       } catch (error) {
         console.error("[RushDB Yugipedia English] Could not copy YDKE", error);
         showManualYdkeCopy(ydke);
@@ -3561,11 +3561,19 @@
   }
 
   function isDeckExportUnavailable(state) {
-    return !state || Boolean(state.loadError) || state.missing.length > 0;
+    return !state || Boolean(state.loadError) || state.copiedCards < 1;
   }
 
   function showManualYdkeCopy(ydke) {
     window.prompt("Copy this YDKE code:", ydke);
+  }
+
+  function getDeckExportSuccessMessage(baseMessage) {
+    if (!deckYdkeCopyState || deckYdkeCopyState.missing.length === 0) {
+      return baseMessage;
+    }
+
+    return `${baseMessage} (${deckYdkeCopyState.copiedCards}/${deckYdkeCopyState.totalCards} cards)`;
   }
 
   function showDeckExportNotice(message) {
@@ -3621,10 +3629,7 @@
       return baseTitle;
     }
 
-    const warning = state.ambiguous.length > 0
-      ? ` ${state.ambiguous.length} duplicate-name match${state.ambiguous.length === 1 ? "" : "es"} used the first matching ID.`
-      : "";
-    return `Download .ydk file for EDOPro (${state.copiedCards}/${state.totalCards} cards).${warning}`;
+    return `Download .ydk file for EDOPro (${state.copiedCards}/${state.totalCards} cards).${getDeckExportWarningText(state)}`;
   }
 
   function getDeckYdkeButtonTitle(state) {
@@ -3633,10 +3638,18 @@
       return baseTitle;
     }
 
-    const warning = state.ambiguous.length > 0
-      ? ` ${state.ambiguous.length} duplicate-name match${state.ambiguous.length === 1 ? "" : "es"} used the first matching ID.`
-      : "";
-    return `Copy ydke:// URL for EDOPro (${state.copiedCards}/${state.totalCards} cards).${warning}`;
+    return `Copy ydke:// URL for EDOPro (${state.copiedCards}/${state.totalCards} cards).${getDeckExportWarningText(state)}`;
+  }
+
+  function getDeckExportWarningText(state) {
+    const warnings = [];
+    if (state.missing.length > 0) {
+      warnings.push(`Skipped missing EDOPro card IDs: ${formatYdkeProblemCards(state.missing)}.`);
+    }
+    if (state.ambiguous.length > 0) {
+      warnings.push(`${state.ambiguous.length} duplicate-name match${state.ambiguous.length === 1 ? "" : "es"} used the first matching ID.`);
+    }
+    return warnings.length > 0 ? ` ${warnings.join(" ")}` : "";
   }
 
   function getDeckExportProblemTitle(state) {
@@ -3646,10 +3659,6 @@
 
     if (state.loadError) {
       return "Could not load EDOPro Rush card IDs from the online JSON.";
-    }
-
-    if (state.missing.length > 0) {
-      return `Missing EDOPro card IDs: ${formatYdkeProblemCards(state.missing)}`;
     }
 
     return "";
