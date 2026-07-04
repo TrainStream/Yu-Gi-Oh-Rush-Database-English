@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Yu-Gi-Oh! Rush Database English
 // @namespace    local.rushdb.yugipedia-english
-// @version      0.3.0
+// @version      0.3.1
 // @description  Replaces Japanese Rush Duel card details on Konami card pages with English data from the hosted database, falling back to Yugipedia.
 // @author	 TrainStream
 // Written with Codex assistance.
@@ -32,7 +32,7 @@
   const HOSTED_DATABASE_URL = "https://raw.githubusercontent.com/TrainStream/Yu-Gi-Oh-Rush-Database-English/main/Database/rush_yugipedia_english.json";
   const RELEASES_API_URL = "https://api.github.com/repos/TrainStream/Yu-Gi-Oh-Rush-Database-English/releases";
   const RELEASES_PAGE_URL = "https://github.com/TrainStream/Yu-Gi-Oh-Rush-Database-English/releases";
-  const SCRIPT_VERSION = "0.2.0";
+  const SCRIPT_VERSION = "0.3.1";
   const CACHE_PREFIX = "rushdb-yugipedia-english:";
   const ENABLED_KEY = "rushdb-yugipedia-english:enabled";
   const SORT_CATEGORIES_KEY = "rushdb-yugipedia-english:sort-categories";
@@ -50,7 +50,7 @@
   const CARD_LOOKUP_DETAIL_TIMEOUT_MS = 20000;
   const HOSTED_DATABASE_TIMEOUT_MS = 30000;
   const CARD_LOOKUP_TIMEOUT_BUFFER_MS = 3000;
-  const EDOPRO_RUSH_CARD_IDS_XLSX_URL = "https://raw.githubusercontent.com/TrainStream/Yu-Gi-Oh-Rush-Database-English/main/Database/edopro-rush-card-ids.xlsx";
+  const EDOPRO_RUSH_CARD_IDS_URL = "https://raw.githubusercontent.com/TrainStream/Yu-Gi-Oh-Rush-Database-English/main/Database/edopro-rush-card-ids.json";
   const params = new URLSearchParams(location.search);
   const cid = params.get("cid");
   const ope = params.get("ope");
@@ -105,7 +105,7 @@
     await applyStoredSearchControlsMinimizedState();
 
     if (!enabled) {
-      setStatus(isLabelOnlyPage ? "English translation is off." : "Yugipedia English translation is off.");
+      setStatus(getTranslationOffStatusText());
       return;
     }
 
@@ -929,7 +929,7 @@
           },
           onload: (response) => {
             if (response.status >= 200 && response.status < 300) {
-              resolve(response.responseText);
+              resolve(response.responseText !== undefined ? response.responseText : response.response);
             } else {
               reject(new Error(`HTTP ${response.status} for ${url}`));
             }
@@ -956,136 +956,6 @@
         })
         .then(resolve, reject);
     });
-  }
-
-  function requestArrayBuffer(url, options) {
-    const timeoutMs = options && options.timeoutMs ? options.timeoutMs : CARD_LOOKUP_DETAIL_TIMEOUT_MS;
-    return new Promise((resolve, reject) => {
-      const gm4Request = typeof GM !== "undefined" && GM.xmlHttpRequest;
-      const gm3Request = typeof GM_xmlhttpRequest !== "undefined" && GM_xmlhttpRequest;
-      const requester = gm4Request || gm3Request;
-
-      if (requester) {
-        requester({
-          method: "GET",
-          url,
-          timeout: timeoutMs,
-          responseType: "arraybuffer",
-          onload: (response) => {
-            if (response.status >= 200 && response.status < 300) {
-              resolve(response.response);
-            } else {
-              reject(new Error(`HTTP ${response.status} for ${url}`));
-            }
-          },
-          onerror: () => reject(new Error(`Request failed for ${url}`)),
-          ontimeout: () => reject(new Error(`Request timed out after ${timeoutMs}ms for ${url}`)),
-        });
-        return;
-      }
-
-      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-      const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
-      fetch(url, { credentials: "omit", signal: controller ? controller.signal : undefined })
-        .then((response) => {
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status} for ${url}`);
-          }
-          return response.arrayBuffer();
-        })
-        .finally(() => {
-          if (timeoutId) {
-            clearTimeout(timeoutId);
-          }
-        })
-        .then(resolve, reject);
-    });
-  }
-
-  async function readZipTextFile(arrayBuffer, fileName, optional) {
-    const bytes = new Uint8Array(arrayBuffer);
-    const entry = findZipEntry(bytes, fileName);
-    if (!entry) {
-      if (optional) {
-        return "";
-      }
-      throw new Error(`XLSX file is missing ${fileName}.`);
-    }
-
-    const compressed = bytes.subarray(entry.dataOffset, entry.dataOffset + entry.compressedSize);
-    let fileBytes = null;
-    if (entry.compressionMethod === 0) {
-      fileBytes = compressed;
-    } else if (entry.compressionMethod === 8) {
-      fileBytes = await inflateRawBytes(compressed);
-    } else {
-      throw new Error(`Unsupported XLSX ZIP compression method ${entry.compressionMethod}.`);
-    }
-
-    return new TextDecoder("utf-8").decode(fileBytes);
-  }
-
-  function findZipEntry(bytes, fileName) {
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const eocdOffset = findZipEndOfCentralDirectory(bytes);
-    if (eocdOffset < 0) {
-      throw new Error("Could not read XLSX ZIP directory.");
-    }
-
-    const centralDirectorySize = view.getUint32(eocdOffset + 12, true);
-    const centralDirectoryOffset = view.getUint32(eocdOffset + 16, true);
-    let offset = centralDirectoryOffset;
-    const endOffset = centralDirectoryOffset + centralDirectorySize;
-
-    while (offset < endOffset && view.getUint32(offset, true) === 0x02014b50) {
-      const compressionMethod = view.getUint16(offset + 10, true);
-      const compressedSize = view.getUint32(offset + 20, true);
-      const fileNameLength = view.getUint16(offset + 28, true);
-      const extraLength = view.getUint16(offset + 30, true);
-      const commentLength = view.getUint16(offset + 32, true);
-      const localHeaderOffset = view.getUint32(offset + 42, true);
-      const name = decodeZipAscii(bytes.subarray(offset + 46, offset + 46 + fileNameLength));
-
-      if (name === fileName) {
-        const localFileNameLength = view.getUint16(localHeaderOffset + 26, true);
-        const localExtraLength = view.getUint16(localHeaderOffset + 28, true);
-        return {
-          compressionMethod,
-          compressedSize,
-          dataOffset: localHeaderOffset + 30 + localFileNameLength + localExtraLength,
-        };
-      }
-
-      offset += 46 + fileNameLength + extraLength + commentLength;
-    }
-
-    return null;
-  }
-
-  function findZipEndOfCentralDirectory(bytes) {
-    for (let offset = bytes.length - 22; offset >= 0 && offset >= bytes.length - 0xffff - 22; offset -= 1) {
-      if (bytes[offset] === 0x50 && bytes[offset + 1] === 0x4b && bytes[offset + 2] === 0x05 && bytes[offset + 3] === 0x06) {
-        return offset;
-      }
-    }
-    return -1;
-  }
-
-  function decodeZipAscii(bytes) {
-    let text = "";
-    bytes.forEach((byte) => {
-      text += String.fromCharCode(byte);
-    });
-    return text;
-  }
-
-  async function inflateRawBytes(bytes) {
-    if (typeof DecompressionStream === "undefined") {
-      throw new Error("This browser cannot decompress the online EDOPro XLSX file.");
-    }
-
-    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
-    return new Uint8Array(await new Response(stream).arrayBuffer());
   }
 
   function applyEnglishData(card) {
@@ -1298,11 +1168,11 @@
     const missing = [];
     const ambiguous = [];
     let totalCards = 0;
-    const cardsByJapaneseName = await getEdoproRushCardsByJapaneseName();
+    const edoproCards = await getEdoproRushCards();
 
     entries.forEach((entry) => {
       totalCards += entry.quantity;
-      const resolution = resolveEdoproRushCardId(entry, cardsById, cardsByJapaneseName);
+      const resolution = resolveEdoproRushCardId(entry, cardsById, edoproCards);
       if (!resolution.id) {
         missing.push(entry);
         return;
@@ -1326,9 +1196,20 @@
     };
   }
 
-  function resolveEdoproRushCardId(entry, cardsById, cardsByJapaneseName) {
-    const candidates = cardsByJapaneseName.get(normalizeEdoproCardName(entry.japaneseName)) || [];
+  function resolveEdoproRushCardId(entry, cardsById, edoproCards) {
+    const candidates = edoproCards.byJapaneseName.get(normalizeEdoproCardName(entry.japaneseName)) || [];
+    const card = cardsById && cardsById.get(entry.databaseId);
+    const rawTitle = card ? getCardDisplayData(card).title : "";
+    const title = normalizeEdoproEnglishName(rawTitle);
+    const lookupTitle = normalizeEdoproEnglishLookupName(rawTitle);
     if (candidates.length === 0) {
+      const englishCandidates = lookupTitle ? edoproCards.byEnglishName.get(lookupTitle) || [] : [];
+      if (englishCandidates.length === 1) {
+        return { id: englishCandidates[0].id, ambiguous: false };
+      }
+      if (englishCandidates.length > 1) {
+        return { id: englishCandidates[0].id, ambiguous: true };
+      }
       return { id: 0, ambiguous: false };
     }
 
@@ -1336,8 +1217,6 @@
       return { id: candidates[0].id, ambiguous: false };
     }
 
-    const card = cardsById && cardsById.get(entry.databaseId);
-    const title = card ? normalizeEdoproEnglishName(getCardDisplayData(card).title) : "";
     const exactEnglishMatches = title
       ? candidates.filter((candidate) => normalizeEdoproEnglishName(candidate.englishName) === title)
       : [];
@@ -1360,97 +1239,49 @@
     return { id: candidates[0].id, ambiguous: true };
   }
 
-  async function getEdoproRushCardsByJapaneseName() {
+  async function getEdoproRushCards() {
     if (!edoproRushCardsPromise) {
-      edoproRushCardsPromise = loadEdoproRushCardsByJapaneseName();
+      edoproRushCardsPromise = loadEdoproRushCards();
     }
     return edoproRushCardsPromise;
   }
 
-  async function loadEdoproRushCardsByJapaneseName() {
-    const rows = await fetchEdoproRushCardIdRows();
-    const cardsByJapaneseName = new Map();
-    rows.forEach((row) => {
-      const id = Number(row[0]);
-      const englishName = String(row[1] || "");
-      const japaneseName = normalizeEdoproCardName(row[2]);
+  async function loadEdoproRushCards() {
+    const cards = await fetchEdoproRushCardIds();
+    const byJapaneseName = new Map();
+    const byEnglishName = new Map();
+    cards.forEach((card) => {
+      const id = Number(card.id);
+      const englishName = String(card.name || "");
+      const japaneseName = normalizeEdoproCardName(card.japanese_name);
       if (!id || !japaneseName) {
         return;
       }
 
-      const candidates = cardsByJapaneseName.get(japaneseName) || [];
-      candidates.push({ id, englishName });
-      cardsByJapaneseName.set(japaneseName, candidates);
-    });
+      const record = { id, englishName };
+      const japaneseCandidates = byJapaneseName.get(japaneseName) || [];
+      japaneseCandidates.push(record);
+      byJapaneseName.set(japaneseName, japaneseCandidates);
 
-    return cardsByJapaneseName;
-  }
-
-  async function fetchEdoproRushCardIdRows() {
-    const workbook = await requestArrayBuffer(EDOPRO_RUSH_CARD_IDS_XLSX_URL, { timeoutMs: HOSTED_DATABASE_TIMEOUT_MS });
-    const sharedStringsXml = await readZipTextFile(workbook, "xl/sharedStrings.xml", true);
-    const sheetXml = await readZipTextFile(workbook, "xl/worksheets/sheet1.xml");
-    const sharedStrings = parseXlsxSharedStrings(sharedStringsXml);
-    return parseEdoproRushCardIdSheet(sheetXml, sharedStrings);
-  }
-
-  function parseXlsxSharedStrings(xmlText) {
-    if (!xmlText) {
-      return [];
-    }
-
-    const documentXml = new DOMParser().parseFromString(xmlText, "application/xml");
-    return Array.from(documentXml.getElementsByTagName("si")).map((item) => {
-      return Array.from(item.getElementsByTagName("t")).map((node) => node.textContent || "").join("");
-    });
-  }
-
-  function parseEdoproRushCardIdSheet(xmlText, sharedStrings) {
-    const documentXml = new DOMParser().parseFromString(xmlText, "application/xml");
-    const rows = [];
-    Array.from(documentXml.getElementsByTagName("row")).forEach((row, rowIndex) => {
-      if (rowIndex === 0) {
-        return;
-      }
-
-      const values = ["", "", ""];
-      Array.from(row.getElementsByTagName("c")).forEach((cell) => {
-        const reference = cell.getAttribute("r") || "";
-        const column = reference.match(/^[A-Z]+/);
-        const columnIndex = column ? xlsxColumnIndex(column[0]) : -1;
-        if (columnIndex < 0 || columnIndex > 2) {
-          return;
-        }
-
-        values[columnIndex] = getXlsxCellValue(cell, sharedStrings);
-      });
-
-      if (values[0] && values[2]) {
-        rows.push(values);
+      const englishKey = normalizeEdoproEnglishLookupName(englishName);
+      if (englishKey) {
+        const englishCandidates = byEnglishName.get(englishKey) || [];
+        englishCandidates.push(record);
+        byEnglishName.set(englishKey, englishCandidates);
       }
     });
-    return rows;
+
+    return { byJapaneseName, byEnglishName };
   }
 
-  function getXlsxCellValue(cell, sharedStrings) {
-    const valueNode = cell.getElementsByTagName("v")[0];
-    const inlineStringNode = cell.getElementsByTagName("t")[0];
-    const rawValue = valueNode ? valueNode.textContent || "" : "";
-    if (cell.getAttribute("t") === "s") {
-      return sharedStrings[Number(rawValue)] || "";
+  async function fetchEdoproRushCardIds() {
+    const text = await requestText(EDOPRO_RUSH_CARD_IDS_URL, { timeoutMs: HOSTED_DATABASE_TIMEOUT_MS });
+    const data = JSON.parse(String(text || "").replace(/^\uFEFF/, ""));
+    const cards = Array.isArray(data) ? data : data && data.cards;
+    if (!Array.isArray(cards) || cards.length === 0) {
+      throw new Error("The EDOPro Rush card ID JSON did not contain any cards.");
     }
-    if (cell.getAttribute("t") === "inlineStr") {
-      return inlineStringNode ? inlineStringNode.textContent || "" : "";
-    }
-    return rawValue;
-  }
-
-  function xlsxColumnIndex(column) {
-    let index = 0;
-    for (let offset = 0; offset < column.length; offset += 1) {
-      index = index * 26 + column.charCodeAt(offset) - 64;
-    }
-    return index - 1;
+    return cards;
   }
 
   function normalizeEdoproCardName(value) {
@@ -1461,6 +1292,12 @@
     return normalizeEdoproCardName(value)
       .toLowerCase()
       .replace(/\s+/g, " ");
+  }
+
+  function normalizeEdoproEnglishLookupName(value) {
+    return normalizeEdoproEnglishName(value)
+      .replace(/\s*\((?:rush|rush duel)\)\s*$/i, "")
+      .trim();
   }
 
   function makeYdke(deck) {
@@ -1550,8 +1387,11 @@
     ].join(";");
     document.body.appendChild(textarea);
     textarea.select();
-    document.execCommand("copy");
+    const copied = document.execCommand("copy");
     textarea.remove();
+    if (!copied) {
+      throw new Error("document.execCommand('copy') returned false.");
+    }
   }
 
   function getCardListIds() {
@@ -2778,8 +2618,8 @@
       "デッキ名の昇順, 更新日付の昇順": "Deck Name Ascending, Update Date Ascending",
       "デッキ名の降順, 更新日付の昇順": "Deck Name Descending, Update Date Ascending"
     };
-    const spreadsheetCategories = [{"value":["OTS","OuTerverSe"],"Count":2},{"value":["安立マニャ","🧑 Manya Atachi"],"Count":2},{"value":["安立ミミ","🧑 Mimi Imimi"],"Count":2},{"value":["安立ヨシオ","🧑 Yosh Imimi"],"Count":2},{"value":["アニマジカ","Animagica"],"Count":2},{"value":["アビスカイト","Abysskite"],"Count":2},{"value":["洗井新太","🧑 Buff Grimes"],"Count":2},{"value":["アリ","Ant"],"Count":2},{"value":["有栖川ジャンゴ","🧑 Janko Entant"],"Count":2},{"value":["暗黒騎士ガイア","Gaia the Fierce Knight"],"Count":2},{"value":["暗黒シャイン王アークトーク","Dark Shine King Arktalk"],"Count":2},{"value":["アンティーク・ギア","Ancient Gear"],"Count":2},{"value":["アーツエンジェル","Arts Angel"],"Count":2},{"value":["行手内造","🧑 Naizo Ikatenai"],"Count":2},{"value":["イス","Chair"],"Count":2},{"value":["いとをかし","Itowokashi"],"Count":2},{"value":["海","Umi"],"Count":2},{"value":["エクスキューティー","Excutie"],"Count":2},{"value":["エポック","🧑 Epoch"],"Count":2},{"value":["焔魔","Blaze Fiend"],"Count":2},{"value":["王道遊歩","🧑 Yuamu Ohdo"],"Count":2},{"value":["王道遊我","🧑 Yuga Ohdo"],"Count":2},{"value":["王道遊飛","🧑 Yuhi Ohdo"],"Count":2},{"value":["大森麺三郎","🧑 Saburamen"],"Count":2},{"value":["お注射天使リリー","Injection Fairy Lily"],"Count":2},{"value":["御前乃ウシロウ","🧑 Toombs"],"Count":2},{"value":["オリジナル","Original"],"Count":2},{"value":["オーティス","🧑 Otes"],"Count":2},{"value":["カイゾー","🧑 Kaizo"],"Count":2},{"value":["怪談","Kaidan / Ghost Story"],"Count":2},{"value":["カオス・ソルジャー","Black Luster Soldier"],"Count":2},{"value":["花牙","Gekka / Flower Fang"],"Count":2},{"value":["籠たま子","🧑 Tamako Kago"],"Count":2},{"value":["かっぱ","Kappa"],"Count":2},{"value":["火麺","Kamen / Fire Noodle"],"Count":2},{"value":["合羽井テル","🧑 Teru Kawai"],"Count":2},{"value":["ガクティング","Gakuting"],"Count":2},{"value":["ガジェット","Gadget"],"Count":2},{"value":["楽鬼","Gakki / Music Princess"],"Count":2},{"value":["ガーゼット","Garzett"],"Count":2},{"value":["輝鋼超竜デヴァスター・オケアビス","Devastar Okeabyss, the Steel Shine Super Dragon"],"Count":2},{"value":["CAN：D","Can:D"],"Count":2},{"value":["霧島ロア","🧑 Roa Kassidy"],"Count":2},{"value":["霧島ロミン","🧑 Romin Kassidy"],"Count":2},{"value":["霧島ロンドン","🧑 London Kassidy"],"Count":2},{"value":["霧島ロヴィアン","🧑 Rovian Kassidy"],"Count":2},{"value":["ギャラクティカ・オブリビオン","Galactica Oblivion"],"Count":2},{"value":["クァイドゥール・ベルギャー","🧑 Kuaidul Velgear"],"Count":2},{"value":["グラット石田","🧑 Glatt Ishida"],"Count":2},{"value":["グレート・モス","Great Moth"],"Count":2},{"value":["恵雷の精霊","Graceful Thunder Spirit"],"Count":2},{"value":["ケミカライズ","Chemicalize"],"Count":2},{"value":["幻壊","Genkai / Phantom Ruin"],"Count":2},{"value":["幻書鳩の騎士ナイト・ヴィジョン","Knight Vision, the Phantom Pigeon Knight"],"Count":2},{"value":["幻刃","Phantom Blade / Genba"],"Count":2},{"value":["コスモス姫","Princess Cosmos"],"Count":2},{"value":["昆遁忍虫","Konton Ninja Insect / Chaotic Ninja Insect"],"Count":2},{"value":["後藤ハント","🧑 Hunt Goto"],"Count":2},{"value":["ゴーハ・ユウナ","🧑 Yuna Goha"],"Count":2},{"value":["西園寺ネイル","🧑 Nail Saionji"],"Count":2},{"value":["最強戦旗","Strongest Battle Flag"],"Count":2},{"value":["彩光のプリマギターナ","Prima Guitarna the Shining Superstar"],"Count":2},{"value":["サイバースパイス","Cyber Spice"],"Count":2},{"value":["サイバー・ドラゴン","Cyber Dragon"],"Count":2},{"value":["サンダービート","Thunderbeat"],"Count":2},{"value":["ザイオン","🧑 Zaion"],"Count":2},{"value":["ザ☆ドラギアス","The☆Dragias"],"Count":2},{"value":["ザ☆ニャンデスター","The☆Meowdestar"],"Count":2},{"value":["ザ☆ルーグ","🧑 The☆Luge"],"Count":2},{"value":["精霊義賊","Spirit Thief"],"Count":2},{"value":["シューバッハ","🧑 Schubel Quill"],"Count":2},{"value":["深淵海竜アビス・クラーケン","Abyss Kraken, the Deep-Sea Dragon"],"Count":2},{"value":["深淵竜神アビス・ポセイドラ","Abyss Poseidra, the Abyss Dragon Deity"],"Count":2},{"value":["真実爆郎","🧑 Scoop Pilman"],"Count":2},{"value":["CPT","Cybersepice"],"Count":2},{"value":["邪犬","Mean Mutt"],"Count":2},{"value":["ジャージ・デビルズ","Jersey Devils"],"Count":2},{"value":["獣機界","Beast Gear World"],"Count":2},{"value":["ジョインテック","Jointech"],"Count":2},{"value":["人造人間","Jinzo"],"Count":2},{"value":["スイーツ過去子","🧑 Sweets Kakoko"],"Count":2},{"value":["寿司天使","Sushi Angel"],"Count":2},{"value":["スターキャット","Star Cat"],"Count":2},{"value":["スターズハンド","Star’s Hand"],"Count":2},{"value":["スパークハーツ","Sparkhearts"],"Count":2},{"value":["スピード","Speed"],"Count":2},{"value":["スーパーマキシマムトレモロガールズ","Super Maximum Tremolo Girls"],"Count":2},{"value":["スーパー・ウォー・ライオン","Super War-Lion"],"Count":2},{"value":["ズウィージョウ","🧑 Zuwijo Zwil Velgear"],"Count":2},{"value":["聖麗","Sacred Splendor"],"Count":2},{"value":["セバスチャン","🧑 Seatbastian"],"Count":2},{"value":["セブンスロード","Sevens Road"],"Count":2},{"value":["セレブローズ","Celeb Rose"],"Count":2},{"value":["千年の盾","Millennium Shield"],"Count":2},{"value":["絶望狂魔","Despair Demon"],"Count":2},{"value":["ゼラ","Zera"],"Count":2},{"value":["蒼救","Azure Savior / Soukyu"],"Count":2},{"value":["蒼月学人","🧑 Gavin Sogetsu"],"Count":2},{"value":["蒼月マグト","🧑 Maguto Sogetsu"],"Count":2},{"value":["蒼月マナブ","🧑 Maddox Sogetsu"],"Count":2},{"value":["象明寺キャタピリオ","🧑 Caterpillio Elephantus"],"Count":2},{"value":["タイガー","🧑 Tiadosia “Tiger” Kallister"],"Count":2},{"value":["平月太","🧑 Tyler Getz"],"Count":2},{"value":["田崎ギャリアン","🧑 Galian Townsend"],"Count":2},{"value":["田崎さん","🧑 Galixon Townsend"],"Count":2},{"value":["タマボット","Tamabot"],"Count":2},{"value":["ダイスマイト","Dicemite"],"Count":2},{"value":["ダイナ－ミクス","Dynamix"],"Count":2},{"value":["ダークマイスター","🧑 Dark Meister"],"Count":2},{"value":["ダークマター","Dark Matter"],"Count":2},{"value":["ダークメン","🧑 Darkmen"],"Count":2},{"value":["チュパ太郎","🧑 Chupataro Kaburagi"],"Count":2},{"value":["帝王","Monarch"],"Count":2},{"value":["手乗りドラコ","Tiny Draco"],"Count":2},{"value":["纏竜","Wrapped Dragon"],"Count":2},{"value":["ディアン・ケト","Dian Keto"],"Count":2},{"value":["ディノワ","🧑 Dinois Velgear"],"Count":2},{"value":["デビルズ・ミラー","Fiend’s Mirror"],"Count":2},{"value":["デーモンの召喚","Summoned Skull"],"Count":2},{"value":["トランザム・ライナック","Transam Linac"],"Count":2},{"value":["ドラギアス","Dragias"],"Count":2},{"value":["ドラゴニック","Dragonic"],"Count":2},{"value":["ナナホ","🧑 Nanaho Nanahoshi"],"Count":2},{"value":["七星テンテン","🧑 Tenten Nanahoshi"],"Count":2},{"value":["七星蘭世","🧑 Rayne Nanahoshi"],"Count":2},{"value":["七星ランラン","🧑 Ranran Nanahoshi"],"Count":2},{"value":["七星凛之介","🧑 Rino Nanahoshi"],"Count":2},{"value":["ヌードル宇宙子","🧑 Celestia Noodlina"],"Count":2},{"value":["N","Normal Monsters"],"Count":2},{"value":["ネクメイド","Necmaid"],"Count":2},{"value":["猫山シュレディンガー","🧑 Schrodinger Nekoyama"],"Count":2},{"value":["ノムラトダマス","🧑 Nomuratodamas"],"Count":2},{"value":["ハイテクドラゴン","High-Tech Dragon"],"Count":2},{"value":["ハイブリッドライブ","Hybridrive"],"Count":2},{"value":["白佛カン","🧑 Kan Hakubutsu"],"Count":2},{"value":["はぐれ使い魔","Stray Familiar"],"Count":2},{"value":["ハトラップ","🧑 Pigetrap"],"Count":2},{"value":["ハングリーバーガー","Hungry Burger"],"Count":2},{"value":["叛骨","Defiant Soul"],"Count":2},{"value":["ハンディーレディ","Handy Lady"],"Count":2},{"value":["ハーピィ","Harpie"],"Count":2},{"value":["バスター・ブレイダー","Buster Blader"],"Count":2},{"value":["バニシング・ヘリアカルライザー","Vanishing Heliacal Riser"],"Count":2},{"value":["秘密捜査官","Secret Investigator"],"Count":2},{"value":["火雷神サンダーボールド","Thunderbold, the Blazing Thunder Deity"],"Count":2},{"value":["平森みつ子","🧑 Terza Flatwood"],"Count":2},{"value":["HERO","HERO"],"Count":2},{"value":["ビック・バイパー","Vic Viper"],"Count":2},{"value":["F・G・D","Five-Headed Dragon"],"Count":2},{"value":["フィンガー地下子","🧑 Terra Kneadalina"],"Count":2},{"value":["フォローウィング・ワールド","Follow-Wing World"],"Count":2},{"value":["フラッシュ海深子","🧑 Flash Umiko"],"Count":2},{"value":["ブラスデス","Brassdes"],"Count":2},{"value":["ブラックカオス","Black Chaos"],"Count":2},{"value":["ブラック・マジシャン","Dark Magician"],"Count":2},{"value":["青眼の白龍","Blue-Eyes White Dragon"],"Count":2},{"value":["プライム","Praime"],"Count":2},{"value":["P・M","Plasmatic"],"Count":2},{"value":["プリンセスG","🧑 Princess G"],"Count":2},{"value":["ベリーフレッシュ","Berry Fresh"],"Count":2},{"value":["報道","News / Reporting"],"Count":2},{"value":["ボチ","🧑 Bochi / Graves"],"Count":2},{"value":["巻寿司子","🧑 Sushiko Maki"],"Count":2},{"value":["マグナム・オーバーロード","Magnum Overlord"],"Count":2},{"value":["マグネット・ウォリアー","Magnet Warrior"],"Count":2},{"value":["マグロ","Maguro / Tuna"],"Count":2},{"value":["間黒七海","🧑 Skipjack"],"Count":2},{"value":["魔将","Fiendish Commander / Mashou"],"Count":2},{"value":["魔法羊女メェ～グちゃん","Magical Sheep Girl Meeeg-chan"],"Count":2},{"value":["夢中","Delirium"],"Count":2},{"value":["六葉アサカ","🧑 Asaka Mutsuba"],"Count":2},{"value":["六葉アサナ","🧑 Asana Mutsuba"],"Count":2},{"value":["ムーンフォース","Moonforce"],"Count":2},{"value":["冥跡","Monumenthes"],"Count":2},{"value":["メタリオン","Metarion"],"Count":2},{"value":["焼肉","Yakiniku / Grilled Meat"],"Count":2},{"value":["野球","Baseball"],"Count":2},{"value":["八木ニック","🧑 Nick Yagi"],"Count":2},{"value":["ユウオウ","🧑 Yuo Goha"],"Count":2},{"value":["ユウカ","🧑 Yuka Goha"],"Count":2},{"value":["湧軍機","Molten Martial Machine"],"Count":2},{"value":["ユウジーン","🧑 Yujin Goha"],"Count":2},{"value":["ユウディアス・ベルギャー","🧑 Yudias Velgear"],"Count":2},{"value":["ユウラン","🧑 Yuran Goha"],"Count":2},{"value":["ユウロ","🧑 Yuro Goha"],"Count":2},{"value":["ユグドラゴ","Yggdrago"],"Count":2},{"value":["要塞クジラ","Fortress Whale"],"Count":2},{"value":["R・HERO","Rising HERO"],"Count":2},{"value":["ライトニング・ボルコンドル","Lightning Bolcondor"],"Count":2},{"value":["ラヴ","🧑 Love"],"Count":2},{"value":["竜宮トレモロ","🧑 Tremolo Ryugu"],"Count":2},{"value":["竜宮フェイザー","🧑 Phaser Ryugu"],"Count":2},{"value":["流聖のプリアージュ","Pliage the Sacred Shooting Star"],"Count":2},{"value":["ルーク","🧑 Lucidien “Luke” Kallister"],"Count":2},{"value":["霊使い","Charmer"],"Count":2},{"value":["レジェンド・マジシャン","Legend Magician"],"Count":2},{"value":["真紅眼の黒竜","Red-Eyes Black Dragon"],"Count":2},{"value":["ロイヤルデモンズ","Royal Rebel’s"],"Count":2},{"value":["ワイト","Skull Servant"],"Count":2},{"value":["Vi－FRND","Vi-FRND"],"Count":2},{"value":["ヴォイドアルヴ","Voidarve"],"Count":2},{"value":["ヴォイドヴェルグ","Voidvelgr"],"Count":2},{"value":["ヴォルカライズ","Volcalize"],"Count":2}];
-    const spreadsheetTags = [{"value":["公式紹介デッキ","Official Featured Decks"],"Count":2},{"value":["エリアチャンピオンシップ","Area Championship"],"Count":2},{"value":["ギャラクシーカップ","Galaxy Cup"],"Count":2},{"value":["トーナメントバトル","Tournament Battle"],"Count":2},{"value":["大会優勝デッキ/入賞デッキ","Tournament Winner/Placing Decks"],"Count":2},{"value":["インストラクターデッキ","Instructor Deck"],"Count":2},{"value":["みんなのおススメデッキ","Everyone\u0027s Recommended Decks"],"Count":2},{"value":["闇属性","DARK"],"Count":2},{"value":["光属性","LIGHT"],"Count":2},{"value":["水属性","WATER"],"Count":2},{"value":["炎属性","FIRE"],"Count":2},{"value":["地属性","EARTH"],"Count":2},{"value":["風属性","WIND"],"Count":2},{"value":["ドラゴン族","Dragon"],"Count":2},{"value":["アンデット族","Zombie"],"Count":2},{"value":["悪魔族","Fiend"],"Count":2},{"value":["炎族","Pyro"],"Count":2},{"value":["海竜族","Sea Serpent"],"Count":2},{"value":["岩石族","Rock"],"Count":2},{"value":["機械族","Machine"],"Count":2},{"value":["魚族","Fish"],"Count":2},{"value":["恐竜族","Dinosaur"],"Count":2},{"value":["昆虫族","Insect"],"Count":2},{"value":["獣族","Beast"],"Count":2},{"value":["獣戦士族","Beast-Warrior"],"Count":2},{"value":["植物族","Plant"],"Count":2},{"value":["水族","Aqua"],"Count":2},{"value":["戦士族","Warrior"],"Count":2},{"value":["鳥獣族","Winged Beast"],"Count":2},{"value":["天使族","Fairy"],"Count":2},{"value":["魔法使い族","Spellcaster"],"Count":2},{"value":["雷族","Thunder"],"Count":2},{"value":["爬虫類族","Reptile"],"Count":2},{"value":["サイキック族","Psychic"],"Count":2},{"value":["幻竜族","Wyrm"],"Count":2},{"value":["サイバース族","Cyberse"],"Count":2},{"value":["サイボーグ族","Cyborg"],"Count":2},{"value":["魔導騎士族","Magical Knight"],"Count":2},{"value":["ハイドラゴン族","High Dragon"],"Count":2},{"value":["天界戦士族","Celestial Warrior"],"Count":2},{"value":["オメガサイキック族","Omega Psychic"],"Count":2},{"value":["ギャラクシー族","Galaxy"],"Count":2},{"value":["オリジナル","Original"],"Count":2},{"value":["公式大会用","Official Tournament"],"Count":2}];
+    const categoryTranslations = [{"value":["OTS","OuTerverSe"],"Count":2},{"value":["安立マニャ","🧑 Manya Atachi"],"Count":2},{"value":["安立ミミ","🧑 Mimi Imimi"],"Count":2},{"value":["安立ヨシオ","🧑 Yosh Imimi"],"Count":2},{"value":["アニマジカ","Animagica"],"Count":2},{"value":["アビスカイト","Abysskite"],"Count":2},{"value":["洗井新太","🧑 Buff Grimes"],"Count":2},{"value":["アリ","Ant"],"Count":2},{"value":["有栖川ジャンゴ","🧑 Janko Entant"],"Count":2},{"value":["暗黒騎士ガイア","Gaia the Fierce Knight"],"Count":2},{"value":["暗黒シャイン王アークトーク","Dark Shine King Arktalk"],"Count":2},{"value":["アンティーク・ギア","Ancient Gear"],"Count":2},{"value":["アーツエンジェル","Arts Angel"],"Count":2},{"value":["行手内造","🧑 Naizo Ikatenai"],"Count":2},{"value":["イス","Chair"],"Count":2},{"value":["いとをかし","Itowokashi"],"Count":2},{"value":["海","Umi"],"Count":2},{"value":["エクスキューティー","Excutie"],"Count":2},{"value":["エポック","🧑 Epoch"],"Count":2},{"value":["焔魔","Blaze Fiend"],"Count":2},{"value":["王道遊歩","🧑 Yuamu Ohdo"],"Count":2},{"value":["王道遊我","🧑 Yuga Ohdo"],"Count":2},{"value":["王道遊飛","🧑 Yuhi Ohdo"],"Count":2},{"value":["大森麺三郎","🧑 Saburamen"],"Count":2},{"value":["お注射天使リリー","Injection Fairy Lily"],"Count":2},{"value":["御前乃ウシロウ","🧑 Toombs"],"Count":2},{"value":["オリジナル","Original"],"Count":2},{"value":["オーティス","🧑 Otes"],"Count":2},{"value":["カイゾー","🧑 Kaizo"],"Count":2},{"value":["怪談","Kaidan / Ghost Story"],"Count":2},{"value":["カオス・ソルジャー","Black Luster Soldier"],"Count":2},{"value":["花牙","Gekka / Flower Fang"],"Count":2},{"value":["籠たま子","🧑 Tamako Kago"],"Count":2},{"value":["かっぱ","Kappa"],"Count":2},{"value":["火麺","Kamen / Fire Noodle"],"Count":2},{"value":["合羽井テル","🧑 Teru Kawai"],"Count":2},{"value":["ガクティング","Gakuting"],"Count":2},{"value":["ガジェット","Gadget"],"Count":2},{"value":["楽鬼","Gakki / Music Princess"],"Count":2},{"value":["ガーゼット","Garzett"],"Count":2},{"value":["輝鋼超竜デヴァスター・オケアビス","Devastar Okeabyss, the Steel Shine Super Dragon"],"Count":2},{"value":["CAN：D","Can:D"],"Count":2},{"value":["霧島ロア","🧑 Roa Kassidy"],"Count":2},{"value":["霧島ロミン","🧑 Romin Kassidy"],"Count":2},{"value":["霧島ロンドン","🧑 London Kassidy"],"Count":2},{"value":["霧島ロヴィアン","🧑 Rovian Kassidy"],"Count":2},{"value":["ギャラクティカ・オブリビオン","Galactica Oblivion"],"Count":2},{"value":["クァイドゥール・ベルギャー","🧑 Kuaidul Velgear"],"Count":2},{"value":["グラット石田","🧑 Glatt Ishida"],"Count":2},{"value":["グレート・モス","Great Moth"],"Count":2},{"value":["恵雷の精霊","Graceful Thunder Spirit"],"Count":2},{"value":["ケミカライズ","Chemicalize"],"Count":2},{"value":["幻壊","Genkai / Phantom Ruin"],"Count":2},{"value":["幻書鳩の騎士ナイト・ヴィジョン","Knight Vision, the Phantom Pigeon Knight"],"Count":2},{"value":["幻刃","Phantom Blade / Genba"],"Count":2},{"value":["コスモス姫","Princess Cosmos"],"Count":2},{"value":["昆遁忍虫","Konton Ninja Insect / Chaotic Ninja Insect"],"Count":2},{"value":["後藤ハント","🧑 Hunt Goto"],"Count":2},{"value":["ゴーハ・ユウナ","🧑 Yuna Goha"],"Count":2},{"value":["西園寺ネイル","🧑 Nail Saionji"],"Count":2},{"value":["最強戦旗","Strongest Battle Flag"],"Count":2},{"value":["彩光のプリマギターナ","Prima Guitarna the Shining Superstar"],"Count":2},{"value":["サイバースパイス","Cyber Spice"],"Count":2},{"value":["サイバー・ドラゴン","Cyber Dragon"],"Count":2},{"value":["サンダービート","Thunderbeat"],"Count":2},{"value":["ザイオン","🧑 Zaion"],"Count":2},{"value":["ザ☆ドラギアス","The☆Dragias"],"Count":2},{"value":["ザ☆ニャンデスター","The☆Meowdestar"],"Count":2},{"value":["ザ☆ルーグ","🧑 The☆Luge"],"Count":2},{"value":["精霊義賊","Spirit Thief"],"Count":2},{"value":["シューバッハ","🧑 Schubel Quill"],"Count":2},{"value":["深淵海竜アビス・クラーケン","Abyss Kraken, the Deep-Sea Dragon"],"Count":2},{"value":["深淵竜神アビス・ポセイドラ","Abyss Poseidra, the Abyss Dragon Deity"],"Count":2},{"value":["真実爆郎","🧑 Scoop Pilman"],"Count":2},{"value":["CPT","Cybersepice"],"Count":2},{"value":["邪犬","Mean Mutt"],"Count":2},{"value":["ジャージ・デビルズ","Jersey Devils"],"Count":2},{"value":["獣機界","Beast Gear World"],"Count":2},{"value":["ジョインテック","Jointech"],"Count":2},{"value":["人造人間","Jinzo"],"Count":2},{"value":["スイーツ過去子","🧑 Sweets Kakoko"],"Count":2},{"value":["寿司天使","Sushi Angel"],"Count":2},{"value":["スターキャット","Star Cat"],"Count":2},{"value":["スターズハンド","Star’s Hand"],"Count":2},{"value":["スパークハーツ","Sparkhearts"],"Count":2},{"value":["スピード","Speed"],"Count":2},{"value":["スーパーマキシマムトレモロガールズ","Super Maximum Tremolo Girls"],"Count":2},{"value":["スーパー・ウォー・ライオン","Super War-Lion"],"Count":2},{"value":["ズウィージョウ","🧑 Zuwijo Zwil Velgear"],"Count":2},{"value":["聖麗","Sacred Splendor"],"Count":2},{"value":["セバスチャン","🧑 Seatbastian"],"Count":2},{"value":["セブンスロード","Sevens Road"],"Count":2},{"value":["セレブローズ","Celeb Rose"],"Count":2},{"value":["千年の盾","Millennium Shield"],"Count":2},{"value":["絶望狂魔","Despair Demon"],"Count":2},{"value":["ゼラ","Zera"],"Count":2},{"value":["蒼救","Azure Savior / Soukyu"],"Count":2},{"value":["蒼月学人","🧑 Gavin Sogetsu"],"Count":2},{"value":["蒼月マグト","🧑 Maguto Sogetsu"],"Count":2},{"value":["蒼月マナブ","🧑 Maddox Sogetsu"],"Count":2},{"value":["象明寺キャタピリオ","🧑 Caterpillio Elephantus"],"Count":2},{"value":["タイガー","🧑 Tiadosia “Tiger” Kallister"],"Count":2},{"value":["平月太","🧑 Tyler Getz"],"Count":2},{"value":["田崎ギャリアン","🧑 Galian Townsend"],"Count":2},{"value":["田崎さん","🧑 Galixon Townsend"],"Count":2},{"value":["タマボット","Tamabot"],"Count":2},{"value":["ダイスマイト","Dicemite"],"Count":2},{"value":["ダイナ－ミクス","Dynamix"],"Count":2},{"value":["ダークマイスター","🧑 Dark Meister"],"Count":2},{"value":["ダークマター","Dark Matter"],"Count":2},{"value":["ダークメン","🧑 Darkmen"],"Count":2},{"value":["チュパ太郎","🧑 Chupataro Kaburagi"],"Count":2},{"value":["帝王","Monarch"],"Count":2},{"value":["手乗りドラコ","Tiny Draco"],"Count":2},{"value":["纏竜","Wrapped Dragon"],"Count":2},{"value":["ディアン・ケト","Dian Keto"],"Count":2},{"value":["ディノワ","🧑 Dinois Velgear"],"Count":2},{"value":["デビルズ・ミラー","Fiend’s Mirror"],"Count":2},{"value":["デーモンの召喚","Summoned Skull"],"Count":2},{"value":["トランザム・ライナック","Transam Linac"],"Count":2},{"value":["ドラギアス","Dragias"],"Count":2},{"value":["ドラゴニック","Dragonic"],"Count":2},{"value":["ナナホ","🧑 Nanaho Nanahoshi"],"Count":2},{"value":["七星テンテン","🧑 Tenten Nanahoshi"],"Count":2},{"value":["七星蘭世","🧑 Rayne Nanahoshi"],"Count":2},{"value":["七星ランラン","🧑 Ranran Nanahoshi"],"Count":2},{"value":["七星凛之介","🧑 Rino Nanahoshi"],"Count":2},{"value":["ヌードル宇宙子","🧑 Celestia Noodlina"],"Count":2},{"value":["N","Normal Monsters"],"Count":2},{"value":["ネクメイド","Necmaid"],"Count":2},{"value":["猫山シュレディンガー","🧑 Schrodinger Nekoyama"],"Count":2},{"value":["ノムラトダマス","🧑 Nomuratodamas"],"Count":2},{"value":["ハイテクドラゴン","High-Tech Dragon"],"Count":2},{"value":["ハイブリッドライブ","Hybridrive"],"Count":2},{"value":["白佛カン","🧑 Kan Hakubutsu"],"Count":2},{"value":["はぐれ使い魔","Stray Familiar"],"Count":2},{"value":["ハトラップ","🧑 Pigetrap"],"Count":2},{"value":["ハングリーバーガー","Hungry Burger"],"Count":2},{"value":["叛骨","Defiant Soul"],"Count":2},{"value":["ハンディーレディ","Handy Lady"],"Count":2},{"value":["ハーピィ","Harpie"],"Count":2},{"value":["バスター・ブレイダー","Buster Blader"],"Count":2},{"value":["バニシング・ヘリアカルライザー","Vanishing Heliacal Riser"],"Count":2},{"value":["秘密捜査官","Secret Investigator"],"Count":2},{"value":["火雷神サンダーボールド","Thunderbold, the Blazing Thunder Deity"],"Count":2},{"value":["平森みつ子","🧑 Terza Flatwood"],"Count":2},{"value":["HERO","HERO"],"Count":2},{"value":["ビック・バイパー","Vic Viper"],"Count":2},{"value":["F・G・D","Five-Headed Dragon"],"Count":2},{"value":["フィンガー地下子","🧑 Terra Kneadalina"],"Count":2},{"value":["フォローウィング・ワールド","Follow-Wing World"],"Count":2},{"value":["フラッシュ海深子","🧑 Flash Umiko"],"Count":2},{"value":["ブラスデス","Brassdes"],"Count":2},{"value":["ブラックカオス","Black Chaos"],"Count":2},{"value":["ブラック・マジシャン","Dark Magician"],"Count":2},{"value":["青眼の白龍","Blue-Eyes White Dragon"],"Count":2},{"value":["プライム","Praime"],"Count":2},{"value":["P・M","Plasmatic"],"Count":2},{"value":["プリンセスG","🧑 Princess G"],"Count":2},{"value":["ベリーフレッシュ","Berry Fresh"],"Count":2},{"value":["報道","News / Reporting"],"Count":2},{"value":["ボチ","🧑 Bochi / Graves"],"Count":2},{"value":["巻寿司子","🧑 Sushiko Maki"],"Count":2},{"value":["マグナム・オーバーロード","Magnum Overlord"],"Count":2},{"value":["マグネット・ウォリアー","Magnet Warrior"],"Count":2},{"value":["マグロ","Maguro / Tuna"],"Count":2},{"value":["間黒七海","🧑 Skipjack"],"Count":2},{"value":["魔将","Fiendish Commander / Mashou"],"Count":2},{"value":["魔法羊女メェ～グちゃん","Magical Sheep Girl Meeeg-chan"],"Count":2},{"value":["夢中","Delirium"],"Count":2},{"value":["六葉アサカ","🧑 Asaka Mutsuba"],"Count":2},{"value":["六葉アサナ","🧑 Asana Mutsuba"],"Count":2},{"value":["ムーンフォース","Moonforce"],"Count":2},{"value":["冥跡","Monumenthes"],"Count":2},{"value":["メタリオン","Metarion"],"Count":2},{"value":["焼肉","Yakiniku / Grilled Meat"],"Count":2},{"value":["野球","Baseball"],"Count":2},{"value":["八木ニック","🧑 Nick Yagi"],"Count":2},{"value":["ユウオウ","🧑 Yuo Goha"],"Count":2},{"value":["ユウカ","🧑 Yuka Goha"],"Count":2},{"value":["湧軍機","Molten Martial Machine"],"Count":2},{"value":["ユウジーン","🧑 Yujin Goha"],"Count":2},{"value":["ユウディアス・ベルギャー","🧑 Yudias Velgear"],"Count":2},{"value":["ユウラン","🧑 Yuran Goha"],"Count":2},{"value":["ユウロ","🧑 Yuro Goha"],"Count":2},{"value":["ユグドラゴ","Yggdrago"],"Count":2},{"value":["要塞クジラ","Fortress Whale"],"Count":2},{"value":["R・HERO","Rising HERO"],"Count":2},{"value":["ライトニング・ボルコンドル","Lightning Bolcondor"],"Count":2},{"value":["ラヴ","🧑 Love"],"Count":2},{"value":["竜宮トレモロ","🧑 Tremolo Ryugu"],"Count":2},{"value":["竜宮フェイザー","🧑 Phaser Ryugu"],"Count":2},{"value":["流聖のプリアージュ","Pliage the Sacred Shooting Star"],"Count":2},{"value":["ルーク","🧑 Lucidien “Luke” Kallister"],"Count":2},{"value":["霊使い","Charmer"],"Count":2},{"value":["レジェンド・マジシャン","Legend Magician"],"Count":2},{"value":["真紅眼の黒竜","Red-Eyes Black Dragon"],"Count":2},{"value":["ロイヤルデモンズ","Royal Rebel’s"],"Count":2},{"value":["ワイト","Skull Servant"],"Count":2},{"value":["Vi－FRND","Vi-FRND"],"Count":2},{"value":["ヴォイドアルヴ","Voidarve"],"Count":2},{"value":["ヴォイドヴェルグ","Voidvelgr"],"Count":2},{"value":["ヴォルカライズ","Volcalize"],"Count":2}];
+    const tagTranslations = [{"value":["公式紹介デッキ","Official Featured Decks"],"Count":2},{"value":["エリアチャンピオンシップ","Area Championship"],"Count":2},{"value":["ギャラクシーカップ","Galaxy Cup"],"Count":2},{"value":["トーナメントバトル","Tournament Battle"],"Count":2},{"value":["大会優勝デッキ/入賞デッキ","Tournament Winner/Placing Decks"],"Count":2},{"value":["インストラクターデッキ","Instructor Deck"],"Count":2},{"value":["みんなのおススメデッキ","Everyone\u0027s Recommended Decks"],"Count":2},{"value":["闇属性","DARK"],"Count":2},{"value":["光属性","LIGHT"],"Count":2},{"value":["水属性","WATER"],"Count":2},{"value":["炎属性","FIRE"],"Count":2},{"value":["地属性","EARTH"],"Count":2},{"value":["風属性","WIND"],"Count":2},{"value":["ドラゴン族","Dragon"],"Count":2},{"value":["アンデット族","Zombie"],"Count":2},{"value":["悪魔族","Fiend"],"Count":2},{"value":["炎族","Pyro"],"Count":2},{"value":["海竜族","Sea Serpent"],"Count":2},{"value":["岩石族","Rock"],"Count":2},{"value":["機械族","Machine"],"Count":2},{"value":["魚族","Fish"],"Count":2},{"value":["恐竜族","Dinosaur"],"Count":2},{"value":["昆虫族","Insect"],"Count":2},{"value":["獣族","Beast"],"Count":2},{"value":["獣戦士族","Beast-Warrior"],"Count":2},{"value":["植物族","Plant"],"Count":2},{"value":["水族","Aqua"],"Count":2},{"value":["戦士族","Warrior"],"Count":2},{"value":["鳥獣族","Winged Beast"],"Count":2},{"value":["天使族","Fairy"],"Count":2},{"value":["魔法使い族","Spellcaster"],"Count":2},{"value":["雷族","Thunder"],"Count":2},{"value":["爬虫類族","Reptile"],"Count":2},{"value":["サイキック族","Psychic"],"Count":2},{"value":["幻竜族","Wyrm"],"Count":2},{"value":["サイバース族","Cyberse"],"Count":2},{"value":["サイボーグ族","Cyborg"],"Count":2},{"value":["魔導騎士族","Magical Knight"],"Count":2},{"value":["ハイドラゴン族","High Dragon"],"Count":2},{"value":["天界戦士族","Celestial Warrior"],"Count":2},{"value":["オメガサイキック族","Omega Psychic"],"Count":2},{"value":["ギャラクシー族","Galaxy"],"Count":2},{"value":["オリジナル","Original"],"Count":2},{"value":["公式大会用","Official Tournament"],"Count":2}];
     const inlineTerms = {};
     const codeTerms = {
       "OTS": "OuTerverSe",
@@ -2812,14 +2652,14 @@
       "降順": "Descending"
     };
 
-    spreadsheetCategories.forEach((entry) => {
+    categoryTranslations.forEach((entry) => {
       const [jp, en] = entry.value || entry;
       exact[jp] = en;
       if (jp.length > 1 && !codeTerms[jp]) {
         inlineTerms[jp] = en;
       }
     });
-    spreadsheetTags.forEach((entry) => {
+    tagTranslations.forEach((entry) => {
       const [jp, en] = entry.value || entry;
       exact[jp] = en;
       if (jp.length > 1 && !codeTerms[jp]) {
@@ -3601,6 +3441,9 @@
       const messageNode = document.createElement("span");
       messageNode.className = "rushdb-yugipedia-status-message";
       messageNode.textContent = message;
+      if (isDeckPage) {
+        messageNode.style.marginRight = "auto";
+      }
       status.appendChild(messageNode);
     }
 
@@ -3650,7 +3493,7 @@
     button.textContent = isDeckExportUnavailable(deckYdkeCopyState) ? "YDK unavailable" : "Download YDK";
     button.disabled = isDeckExportUnavailable(deckYdkeCopyState);
     button.title = getDeckYdkButtonTitle(deckYdkeCopyState);
-    button.style.cssText = getDeckExportButtonStyle("auto");
+    button.style.cssText = getDeckExportButtonStyle("6px");
 
     if (button.disabled) {
       button.style.cursor = "not-allowed";
@@ -3664,13 +3507,10 @@
         return;
       }
 
-      button.disabled = true;
       try {
         downloadTextFile(makeYdk(deckYdkeCopyState.deck), getDeckExportFilename("ydk"));
-        button.disabled = false;
       } catch (error) {
         console.error("[RushDB Yugipedia English] Could not download YDK", error);
-        button.disabled = false;
         button.textContent = "Download failed";
         setTimeout(() => {
           button.textContent = isDeckExportUnavailable(deckYdkeCopyState) ? "YDK unavailable" : "Download YDK";
@@ -3678,6 +3518,7 @@
       }
     });
 
+    appendDeckExportNotice(status);
     status.appendChild(button);
   }
 
@@ -3706,17 +3547,13 @@
         return;
       }
 
-      button.disabled = true;
+      const ydke = makeYdke(deckYdkeCopyState.deck);
       try {
-        await copyTextToClipboard(makeYdke(deckYdkeCopyState.deck));
-        button.disabled = false;
+        await copyTextToClipboard(ydke);
+        showDeckExportNotice("YDKE copied to clipboard.");
       } catch (error) {
         console.error("[RushDB Yugipedia English] Could not copy YDKE", error);
-        button.disabled = false;
-        button.textContent = "Copy failed";
-        setTimeout(() => {
-          button.textContent = isDeckExportUnavailable(deckYdkeCopyState) ? "YDKE unavailable" : "Copy YDKE";
-        }, 2000);
+        showManualYdkeCopy(ydke);
       }
     });
 
@@ -3725,6 +3562,42 @@
 
   function isDeckExportUnavailable(state) {
     return !state || Boolean(state.loadError) || state.missing.length > 0;
+  }
+
+  function showManualYdkeCopy(ydke) {
+    window.prompt("Copy this YDKE code:", ydke);
+  }
+
+  function showDeckExportNotice(message) {
+    const status = document.getElementById("rushdb-yugipedia-english-status");
+    if (!status) {
+      window.alert(message);
+      return;
+    }
+
+    const notice = appendDeckExportNotice(status);
+    notice.textContent = message;
+    clearTimeout(showDeckExportNotice.timeoutId);
+    showDeckExportNotice.timeoutId = setTimeout(() => {
+      notice.textContent = "";
+    }, 2000);
+  }
+
+  function appendDeckExportNotice(status) {
+    let notice = document.getElementById("rushdb-yugipedia-deck-export-notice");
+    if (!notice) {
+      notice = document.createElement("span");
+      notice.id = "rushdb-yugipedia-deck-export-notice";
+      notice.style.cssText = [
+        "margin-left: 4px",
+        "margin-right: 0",
+        "font-weight: bold",
+        "color: #0b6b2b",
+        "white-space: nowrap",
+      ].join(";");
+      status.appendChild(notice);
+    }
+    return notice;
   }
 
   function getDeckExportButtonStyle(marginLeft) {
@@ -3749,7 +3622,7 @@
     }
 
     const warning = state.ambiguous.length > 0
-      ? ` ${state.ambiguous.length} duplicate-name match${state.ambiguous.length === 1 ? "" : "es"} used the first spreadsheet ID.`
+      ? ` ${state.ambiguous.length} duplicate-name match${state.ambiguous.length === 1 ? "" : "es"} used the first matching ID.`
       : "";
     return `Download .ydk file for EDOPro (${state.copiedCards}/${state.totalCards} cards).${warning}`;
   }
@@ -3761,18 +3634,18 @@
     }
 
     const warning = state.ambiguous.length > 0
-      ? ` ${state.ambiguous.length} duplicate-name match${state.ambiguous.length === 1 ? "" : "es"} used the first spreadsheet ID.`
+      ? ` ${state.ambiguous.length} duplicate-name match${state.ambiguous.length === 1 ? "" : "es"} used the first matching ID.`
       : "";
     return `Copy ydke:// URL for EDOPro (${state.copiedCards}/${state.totalCards} cards).${warning}`;
   }
 
   function getDeckExportProblemTitle(state) {
     if (!state) {
-      return "";
+      return "EDOPro deck export is not available until deck data finishes loading.";
     }
 
     if (state.loadError) {
-      return "Could not load EDOPro Rush card IDs from the online XLSX.";
+      return "Could not load EDOPro Rush card IDs from the online JSON.";
     }
 
     if (state.missing.length > 0) {
@@ -3867,6 +3740,10 @@
     return document.querySelector("#cardname.cardname") || document.querySelector(".sp.cardname");
   }
 
+  function getTranslationOffStatusText() {
+    return isLabelOnlyPage ? "English translation is off. Click Auto English to turn it on." : "Yugipedia English translation is off. Click Auto English to turn it on.";
+  }
+
   function createToggle(enabled) {
     if (document.getElementById("rushdb-yugipedia-english-toggle")) {
       return;
@@ -3944,7 +3821,7 @@
             restoreDeckSearchCategoryOrder();
           }
           restoreCurrentTarget();
-          setStatus(isLabelOnlyPage ? "English translation is off." : "Yugipedia English translation is off.");
+          setStatus(getTranslationOffStatusText());
         }
       } catch (error) {
         console.error("[RushDB Yugipedia English]", error);
@@ -4816,3 +4693,4 @@
     }
   }
 })();
+
