@@ -24,6 +24,7 @@ import queue
 import random
 import re
 import sqlite3
+import sys
 import threading
 import time
 import tkinter as tk
@@ -50,6 +51,11 @@ USER_AGENT = (
 REQUEST_INTERVAL_SECONDS = 1.0
 REQUEST_ATTEMPTS = 6
 FETCH_BATCH_SIZE = 50
+RETRYABLE_API_ERROR_PREFIXES = (
+    "internal_api_error",
+    "readonly",
+    "ratelimited",
+)
 
 CARD_CATEGORIES = [
     "Rush Duel cards",
@@ -86,6 +92,7 @@ RUSH_PRODUCT_LINK_HINTS = [
 CARD_NUMBER_RE = re.compile(r"\b((?:RD|RD/[A-Z0-9]+|RD/[A-Z0-9-]+)[A-Z0-9/-]*-JP[A-Z]?\d{3})\b", re.I)
 SET_CODE_SUFFIX_RE = re.compile(r"-JP[A-Z]?\d{3}$", re.I)
 JP_PREFIX_RE = re.compile(r"\b((?:RD|RD/[A-Z0-9]+|RD/[A-Z0-9-]+)[A-Z0-9/-]*-JP[A-Z]?)\b", re.I)
+FIELD_PREFIX_RE = re.compile(r"\b(RD/[A-Z0-9][A-Z0-9/-]*)(?:-JP[A-Z]?)?\b", re.I)
 JP_PREFIX_SUFFIX_RE = re.compile(r"-JP[A-Z]?$", re.I)
 
 CARD_FIELD_HINTS = {
@@ -195,6 +202,14 @@ def build_request(query: Dict[str, Any]) -> Request:
     return Request(f"{API_URL}?{encoded.decode('utf-8')}", headers=headers, method="GET")
 
 
+def retry_delay_for_attempt(attempt: int) -> float:
+    return [1.5, 3.0, 7.0, 12.0, 20.0][min(attempt, 4)] + random.random()
+
+
+def is_retryable_api_error(code: str) -> bool:
+    return code == "maxlag" or any(code.startswith(prefix) for prefix in RETRYABLE_API_ERROR_PREFIXES)
+
+
 def request_json(query: Dict[str, Any], stop_event: threading.Event, attempts: int = REQUEST_ATTEMPTS) -> Dict[str, Any]:
     query = dict(query)
     query.setdefault("format", "json")
@@ -217,12 +232,15 @@ def request_json(query: Dict[str, Any], stop_event: threading.Event, attempts: i
                 code = str(error.get("code", "api_error"))
                 info = str(error.get("info", "Yugipedia API error"))
                 last_error = YugipediaError(f"{code}: {info}")
-                if code == "maxlag" and attempt + 1 < attempts:
+                if is_retryable_api_error(code) and attempt + 1 < attempts:
                     lag = error.get("lag")
-                    try:
-                        delay = max(5.0, float(lag) + random.random())
-                    except (TypeError, ValueError):
-                        delay = 7.0 + random.random()
+                    if code == "maxlag":
+                        try:
+                            delay = max(5.0, float(lag) + random.random())
+                        except (TypeError, ValueError):
+                            delay = 7.0 + random.random()
+                    else:
+                        delay = retry_delay_for_attempt(attempt)
                     sleep_with_stop(delay, stop_event)
                     continue
                 raise last_error
@@ -235,20 +253,18 @@ def request_json(query: Dict[str, Any], stop_event: threading.Event, attempts: i
             if attempt + 1 >= attempts:
                 break
             retry_after = get_retry_after_seconds(exc)
-            delay = retry_after if retry_after is not None else ([1.5, 3.0, 7.0, 12.0, 20.0][min(attempt, 4)] + random.random())
+            delay = retry_after if retry_after is not None else retry_delay_for_attempt(attempt)
             sleep_with_stop(delay, stop_event)
         except (URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
             last_error = exc
             if attempt + 1 >= attempts:
                 break
-            delay = [1.5, 3.0, 7.0, 12.0, 20.0][min(attempt, 4)] + random.random()
-            sleep_with_stop(delay, stop_event)
+            sleep_with_stop(retry_delay_for_attempt(attempt), stop_event)
         except Exception as exc:
             last_error = exc
             if attempt + 1 >= attempts:
                 break
-            delay = [1.5, 3.0, 7.0, 12.0, 20.0][min(attempt, 4)] + random.random()
-            sleep_with_stop(delay, stop_event)
+            sleep_with_stop(retry_delay_for_attempt(attempt), stop_event)
 
     raise YugipediaError(str(last_error))
 
@@ -256,6 +272,7 @@ def request_json(query: Dict[str, Any], stop_event: threading.Event, attempts: i
 def category_members(category: str, stop_event: threading.Event, log: Callable[[str], None]) -> List[str]:
     titles: List[str] = []
     cont: Dict[str, str] = {}
+    log(f"Fetching category '{category}'...")
     while True:
         query = {
             "action": "query",
@@ -343,6 +360,35 @@ def fetch_pages(titles: Sequence[str], stop_event: threading.Event) -> Dict[str,
                 if original_title:
                     results[original_title] = result
     return results
+
+
+def fetch_pages_with_fallback(
+    titles: Sequence[str],
+    stop_event: threading.Event,
+    log: Callable[[str], None],
+    update_log: Optional[Callable[[str], None]] = None,
+) -> Tuple[Dict[str, PageResult], Dict[str, BaseException]]:
+    try:
+        return fetch_pages(titles, stop_event), {}
+    except StopRequested:
+        raise
+    except Exception as exc:
+        if len(titles) <= 1:
+            return {}, {titles[0]: exc} if titles else {}
+        log(f"Batch fetch failed: {exc}; retrying {len(titles)} pages individually")
+
+    results: Dict[str, PageResult] = {}
+    errors: Dict[str, BaseException] = {}
+    progress_log = update_log or log
+    for index, title in enumerate(titles, start=1):
+        progress_log(f"Retrying batch page {index}/{len(titles)}: {title}")
+        try:
+            results.update(fetch_pages([title], stop_event))
+        except StopRequested:
+            raise
+        except Exception as exc:
+            errors[title] = exc
+    return results, errors
 
 
 def get_revision_text(revision: Dict[str, Any]) -> str:
@@ -661,14 +707,14 @@ def extract_jp_prefixes(fields: Dict[str, str], wikitext: str) -> List[str]:
     candidates: List[str] = []
     for key, value in fields.items():
         if key.lower().strip() in {"prefix", "jp_prefix", "ja_prefix"}:
-            candidates.extend(match.group(1).upper() for match in JP_PREFIX_RE.finditer(str(value)))
+            candidates.extend(match.group(1).upper() for match in FIELD_PREFIX_RE.finditer(str(value)))
     for match in JP_PREFIX_RE.finditer(wikitext):
         value = match.group(1).upper()
         if not CARD_NUMBER_RE.fullmatch(value):
             candidates.append(value)
     seen: Dict[str, None] = {}
     for value in candidates:
-        if value.endswith("-JP") or re.search(r"-JP[A-Z]$", value):
+        if normalize_set_code_from_prefix(value).startswith("RD/"):
             seen.setdefault(value, None)
     return sorted(seen)
 
@@ -813,6 +859,11 @@ class Database:
                     reason TEXT NOT NULL,
                     fetched_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS product_fetches (
+                    title TEXT PRIMARY KEY,
+                    set_code_count INTEGER NOT NULL,
+                    last_attempt_at TEXT NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS idx_cards_title ON cards(title);
                 CREATE INDEX IF NOT EXISTS idx_cards_page_title ON cards(page_title);
                 CREATE INDEX IF NOT EXISTS idx_cards_pageid ON cards(pageid);
@@ -917,6 +968,10 @@ class Database:
                     json.dumps(code_prefixes, ensure_ascii=False),
                     json.dumps(fields, ensure_ascii=False, sort_keys=True), fetched_at,
                 ))
+            self.conn.execute("""
+                INSERT OR REPLACE INTO product_fetches(title, set_code_count, last_attempt_at)
+                VALUES (?, ?, ?)
+            """, (page.title, len(set_codes), fetched_at))
             self.conn.execute("DELETE FROM failures WHERE title = ?", (page.title,))
             self.conn.execute("DELETE FROM skipped_pages WHERE title = ?", (page.title,))
         return len(set_codes)
@@ -934,10 +989,23 @@ class Database:
                 INSERT OR REPLACE INTO skipped_pages(title, kind, reason, fetched_at)
                 VALUES (?, ?, ?, ?)
             """, (title, kind, reason, utc_now()))
+            self.conn.execute("DELETE FROM failures WHERE title = ?", (title,))
 
     def failed_titles(self) -> List[Tuple[str, str]]:
         with self.lock:
             return list(self.conn.execute("SELECT title, kind FROM failures ORDER BY last_attempt_at DESC"))
+
+    def empty_set_product_titles(self) -> List[Tuple[str, str]]:
+        with self.lock:
+            return [
+                (title, "product")
+                for (title,) in self.conn.execute("""
+                    SELECT title
+                    FROM product_fetches
+                    WHERE set_code_count = 0
+                    ORDER BY last_attempt_at DESC
+                """)
+            ]
 
     def export_json(self, path: str) -> Tuple[int, int]:
         parent = os.path.dirname(path)
@@ -1214,17 +1282,17 @@ class BuilderWorker:
         self.stop_event = threading.Event()
         self.thread: Optional[threading.Thread] = None
 
-    def start(self, retry_only: bool = False) -> None:
+    def start(self, mode: str = "full") -> None:
         if self.thread and self.thread.is_alive():
             return
         self.stop_event.clear()
-        self.thread = threading.Thread(target=self.run, args=(retry_only,), daemon=True)
+        self.thread = threading.Thread(target=self.run, args=(mode,), daemon=True)
         self.thread.start()
 
     def stop(self) -> None:
         self.stop_event.set()
 
-    def run(self, retry_only: bool) -> None:
+    def run(self, mode: str) -> None:
         try:
             self.app.worker_started()
             output_dir = self.app.output_dir.get().strip() or DEFAULT_OUTPUT_DIR
@@ -1236,12 +1304,18 @@ class BuilderWorker:
             try:
                 limit = self.app.get_limit()
                 skip_unchanged = self.app.skip_unchanged.get()
-                if retry_only:
+                if mode == "failed":
                     targets = db.failed_titles()
                     self.app.log(f"Retrying {len(targets)} failed pages")
                     self.process_targets(db, targets, limit, skip_unchanged)
+                elif mode == "empty_sets":
+                    targets = db.empty_set_product_titles()
+                    self.app.log(f"Retrying {len(targets)} products with 0 set codes")
+                    self.process_targets(db, targets, limit, skip_unchanged)
                 else:
+                    self.app.log("Discovering card pages...")
                     card_titles = discover_card_titles(self.stop_event, self.app.log)
+                    self.app.log("Discovering product pages...")
                     product_titles = discover_product_titles(self.stop_event, self.app.log)
                     targets = [(title, "card") for title in card_titles] + [(title, "product") for title in product_titles]
                     if limit:
@@ -1272,12 +1346,19 @@ class BuilderWorker:
             if self.stop_event.is_set():
                 raise StopRequested()
             titles = [title for title, _kind in batch]
-            pages = fetch_pages(titles, self.stop_event)
+            pages, fetch_errors = fetch_pages_with_fallback(titles, self.stop_event, self.app.log, self.app.update_log)
             for title, kind in batch:
                 done += 1
                 try:
+                    if title in fetch_errors:
+                        raise YugipediaError(f"Fetch failed: {fetch_errors[title]}")
                     page = pages.get(title)
                     if not page:
+                        if kind == "product":
+                            db.record_skip(title, kind, "page content not found")
+                            self.app.log(f"Skipped missing product page: {title}")
+                            self.app.progress(done, total, title)
+                            continue
                         raise YugipediaError("Page content not found")
                     message = self.process_page(db, page, kind, skip_unchanged)
                     self.app.log(message)
@@ -1361,6 +1442,7 @@ class App:
         self.status_var = tk.StringVar(value="Idle")
         self.progress_var = tk.DoubleVar(value=0)
         self.messages: "queue.Queue[Tuple[str, Any]]" = queue.Queue()
+        self.last_log_was_update = False
         self.worker = BuilderWorker(self)
         self.build_ui()
         self.root.after(100, self.drain_messages)
@@ -1389,14 +1471,16 @@ class App:
 
         buttons = ttk.Frame(frame)
         buttons.grid(row=3, column=0, columnspan=3, sticky="ew", pady=8)
-        self.start_button = ttk.Button(buttons, text="Start Full Build", command=lambda: self.worker.start(False))
+        self.start_button = ttk.Button(buttons, text="Start Full Build", command=lambda: self.worker.start("full"))
         self.start_button.pack(side="left")
-        self.retry_button = ttk.Button(buttons, text="Retry Failed", command=lambda: self.worker.start(True))
+        self.retry_button = ttk.Button(buttons, text="Retry Failed", command=lambda: self.worker.start("failed"))
         self.retry_button.pack(side="left", padx=6)
+        self.retry_empty_sets_button = ttk.Button(buttons, text="Retry Empty Sets", command=lambda: self.worker.start("empty_sets"))
+        self.retry_empty_sets_button.pack(side="left")
         self.stop_button = ttk.Button(buttons, text="Stop", command=self.worker.stop)
-        self.stop_button.pack(side="left")
+        self.stop_button.pack(side="left", padx=6)
         self.export_button = ttk.Button(buttons, text="Export JSON + XLSX", command=self.export_only)
-        self.export_button.pack(side="left", padx=6)
+        self.export_button.pack(side="left")
 
         ttk.Label(frame, textvariable=self.status_var).grid(row=4, column=0, columnspan=3, sticky="w")
         self.progress_bar = ttk.Progressbar(frame, variable=self.progress_var, maximum=100)
@@ -1425,6 +1509,21 @@ class App:
     def log(self, message: str) -> None:
         self.messages.put(("log", message))
 
+    def update_log(self, message: str) -> None:
+        self.messages.put(("log_update", message))
+
+    def replace_last_log_line(self, message: str) -> None:
+        if not self.last_log_was_update:
+            self.log_box.insert("end", f"{message}\n")
+            self.last_log_was_update = True
+            self.log_box.see("end")
+            return
+        last_line_start = self.log_box.index("end-2c linestart")
+        last_line_end = self.log_box.index("end-1c")
+        self.log_box.delete(last_line_start, last_line_end)
+        self.log_box.insert(last_line_start, message)
+        self.log_box.see("end")
+
     def progress(self, done: int, total: int, title: str) -> None:
         self.messages.put(("progress", (done, total, title)))
 
@@ -1440,7 +1539,10 @@ class App:
                 kind, payload = self.messages.get_nowait()
                 if kind == "log":
                     self.log_box.insert("end", f"{payload}\n")
+                    self.last_log_was_update = False
                     self.log_box.see("end")
+                elif kind == "log_update":
+                    self.replace_last_log_line(str(payload))
                 elif kind == "progress":
                     done, total, title = payload
                     self.progress_var.set((done / total * 100) if total else 0)
@@ -1448,11 +1550,13 @@ class App:
                 elif kind == "started":
                     self.start_button.configure(state="disabled")
                     self.retry_button.configure(state="disabled")
+                    self.retry_empty_sets_button.configure(state="disabled")
                     self.export_button.configure(state="disabled")
                     self.status_var.set("Running")
                 elif kind == "done":
                     self.start_button.configure(state="normal")
                     self.retry_button.configure(state="normal")
+                    self.retry_empty_sets_button.configure(state="normal")
                     self.export_button.configure(state="normal")
                     self.status_var.set("Idle")
         except queue.Empty:
@@ -1480,16 +1584,33 @@ def run_cli(args: argparse.Namespace) -> None:
     output_dir = args.output_dir or DEFAULT_OUTPUT_DIR
     os.makedirs(output_dir, exist_ok=True)
     db = Database(os.path.join(output_dir, DEFAULT_SQLITE_NAME))
+    cli_update_state = {"active": False, "length": 0}
 
     def log(message: str) -> None:
+        if cli_update_state["active"]:
+            print()
+            cli_update_state["active"] = False
+            cli_update_state["length"] = 0
         print(message, flush=True)
+
+    def update_log(message: str) -> None:
+        padding = " " * max(0, cli_update_state["length"] - len(message))
+        sys.stdout.write(f"\r{message}{padding}")
+        sys.stdout.flush()
+        cli_update_state["active"] = True
+        cli_update_state["length"] = len(message)
 
     try:
         if args.retry_failed:
             targets = db.failed_titles()
             log(f"Retrying {len(targets)} failed pages")
+        elif args.retry_empty_sets:
+            targets = db.empty_set_product_titles()
+            log(f"Retrying {len(targets)} products with 0 set codes")
         else:
+            log("Discovering card pages...")
             card_titles = discover_card_titles(stop_event, log)
+            log("Discovering product pages...")
             product_titles = discover_product_titles(stop_event, log)
             targets = [(title, "card") for title in card_titles] + [(title, "product") for title in product_titles]
         if args.limit:
@@ -1499,12 +1620,18 @@ def run_cli(args: argparse.Namespace) -> None:
         total = len(targets)
         done = 0
         for batch in iter_batches(targets, FETCH_BATCH_SIZE):
-            pages = fetch_pages([title for title, _kind in batch], stop_event)
+            pages, fetch_errors = fetch_pages_with_fallback([title for title, _kind in batch], stop_event, log, update_log)
             for title, kind in batch:
                 done += 1
                 try:
+                    if title in fetch_errors:
+                        raise YugipediaError(f"Fetch failed: {fetch_errors[title]}")
                     page = pages.get(title)
                     if not page:
+                        if kind == "product":
+                            db.record_skip(title, kind, "page content not found")
+                            log(f"{done}/{total} Skipped missing product page: {title}")
+                            continue
                         raise YugipediaError("Page content not found")
                     fields = parse_template_fields(page.wikitext)
                     if kind == "product":
@@ -1541,6 +1668,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Directory for SQLite, JSON, and XLSX outputs")
     parser.add_argument("--limit", type=int, default=None, help="Optional test limit")
     parser.add_argument("--retry-failed", action="store_true", help="Retry pages listed in the failures table")
+    parser.add_argument("--retry-empty-sets", action="store_true", help="Retry product pages that previously produced 0 set codes")
     parser.add_argument("--no-skip-unchanged", dest="skip_unchanged", action="store_false", help="Do not skip card pages whose revision is already stored")
     parser.set_defaults(skip_unchanged=True)
     return parser
