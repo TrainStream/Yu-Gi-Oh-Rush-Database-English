@@ -1,7 +1,7 @@
 # Yu-Gi-Oh! Rush Duel Database in English
 Warning! AI slop! But it works!
 
-Userscript that replaces Japanese Rush Duel card/deck data on Konami's Rush Duel Database with English data from from [Yugipedia.com](https://yugipedia.com/wiki/Yugipedia)
+Userscript that replaces Japanese Rush Duel card/deck data on the official Database with English data from from [Yugipedia.com](https://yugipedia.com/wiki/Yugipedia)
 
 ## Features
 
