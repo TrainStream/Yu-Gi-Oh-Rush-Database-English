@@ -1297,6 +1297,11 @@
       "japanese_name": "豊沃の蟠竜"
     },
     {
+      "id": 160005037,
+      "name": "Coil Dragon of the Fertile Land",
+      "japanese_name": "豊沃の蟠竜"
+    },
+    {
       "id": 160005038,
       "name": "Kheiron the Star Knight",
       "japanese_name": "星戦騎ケーロン"
@@ -1959,6 +1964,11 @@
     {
       "id": 160007038,
       "name": "Meat Spice the Special Noodle Ninja",
+      "japanese_name": "火麺特忍ニクマシゴックブート"
+    },
+    {
+      "id": 160007038,
+      "name": "Extra Meat the Special Noodle Ninja",
       "japanese_name": "火麺特忍ニクマシゴックブート"
     },
     {
@@ -3522,8 +3532,18 @@
       "japanese_name": "蒼救天使 ソレイル"
     },
     {
+      "id": 160012020,
+      "name": "Soleil, the Fairy of Skysavior",
+      "japanese_name": "蒼救天使 ソレイル"
+    },
+    {
       "id": 160012021,
       "name": "Lua the Skysavior Angel",
+      "japanese_name": "蒼救天使 ルーア"
+    },
+    {
+      "id": 160012021,
+      "name": "Lua, the Fairy of Skysavior",
       "japanese_name": "蒼救天使 ルーア"
     },
     {
@@ -3532,8 +3552,18 @@
       "japanese_name": "蒼救騎士 ランガ"
     },
     {
+      "id": 160012022,
+      "name": "Langa, the Knight of Skysavior",
+      "japanese_name": "蒼救騎士 ランガ"
+    },
+    {
       "id": 160012023,
       "name": "Seir the Skysavior Knight",
+      "japanese_name": "蒼救騎士 セイル"
+    },
+    {
+      "id": 160012023,
+      "name": "Sael, the Knight of Skysavior",
       "japanese_name": "蒼救騎士 セイル"
     },
     {
@@ -3542,8 +3572,18 @@
       "japanese_name": "蒼救騎士 シエーラ"
     },
     {
+      "id": 160012024,
+      "name": "Ciela, the Knight of Skysavior",
+      "japanese_name": "蒼救騎士 シエーラ"
+    },
+    {
       "id": 160012025,
       "name": "Dunkes the Skysavior Knight",
+      "japanese_name": "蒼救騎士 ダンクス"
+    },
+    {
+      "id": 160012025,
+      "name": "Dankus, the Knight of Skysavior",
       "japanese_name": "蒼救騎士 ダンクス"
     },
     {
@@ -3612,6 +3652,11 @@
       "japanese_name": "蒼救の閃光 ソルシュエール"
     },
     {
+      "id": 160012038,
+      "name": "Solciere, the Radiant Skysavior",
+      "japanese_name": "蒼救の閃光 ソルシュエール"
+    },
+    {
       "id": 160012039,
       "name": "Altierra the Skysavior Transience",
       "japanese_name": "蒼救の泡影 アルティエラ"
@@ -3622,8 +3667,18 @@
       "japanese_name": "蒼救の一閃 ディグレイス"
     },
     {
+      "id": 160012040,
+      "name": "Degrace, the Flash Skysavior",
+      "japanese_name": "蒼救の一閃 ディグレイス"
+    },
+    {
       "id": 160012041,
       "name": "Drukmoor the Skysavior Phantom",
+      "japanese_name": "蒼救の幻影 ドルクムーア"
+    },
+    {
+      "id": 160012041,
+      "name": "Dulkmua, the Phantom Skysavior",
       "japanese_name": "蒼救の幻影 ドルクムーア"
     },
     {
@@ -3699,6 +3754,11 @@
     {
       "id": 160012056,
       "name": "Transamu Lightning",
+      "japanese_name": "トランザム・ライトニング"
+    },
+    {
+      "id": 160012056,
+      "name": "Transam Lightning",
       "japanese_name": "トランザム・ライトニング"
     },
     {
@@ -4667,6 +4727,11 @@
       "japanese_name": "蒼救の光耀 ガルフレア"
     },
     {
+      "id": 160015049,
+      "name": "Gulflare, the Skysavior",
+      "japanese_name": "蒼救の光耀 ガルフレア"
+    },
+    {
       "id": 160015050,
       "name": "Dragonic Progression",
       "japanese_name": "ドラゴニック・プログレス"
@@ -4739,6 +4804,11 @@
     {
       "id": 160015064,
       "name": "Skysavior Wish",
+      "japanese_name": "蒼救の願い"
+    },
+    {
+      "id": 160015064,
+      "name": "Wish of the Skysavior",
       "japanese_name": "蒼救の願い"
     },
     {
@@ -5277,6 +5347,11 @@
       "japanese_name": "純真のファドロニール"
     },
     {
+      "id": 160017037,
+      "name": "Innocent Fadrawl",
+      "japanese_name": "純真のファドロニール"
+    },
+    {
       "id": 160017038,
       "name": "Data Eater",
       "japanese_name": "データーイーター"
@@ -5487,8 +5562,18 @@
       "japanese_name": "幻壊兵ハケン・ハーケン"
     },
     {
+      "id": 160018012,
+      "name": "Destructor Soldier Haken",
+      "japanese_name": "幻壊兵ハケン・ハーケン"
+    },
+    {
       "id": 160018013,
       "name": "Demolition Soldier Shokku Du",
+      "japanese_name": "幻壊兵ショック・ドゥ"
+    },
+    {
+      "id": 160018013,
+      "name": "Destructor Soldier Canteen",
       "japanese_name": "幻壊兵ショック・ドゥ"
     },
     {
@@ -5652,6 +5737,11 @@
       "japanese_name": "幻壊帝バクハカイザー"
     },
     {
+      "id": 160018045,
+      "name": "Destructor Emperor Bakhakaiser",
+      "japanese_name": "幻壊帝バクハカイザー"
+    },
+    {
       "id": 160018046,
       "name": "Tune Flutomahawk the Music Princess",
       "japanese_name": "斧楽姫チューンフルートマホーク"
@@ -5692,8 +5782,18 @@
       "japanese_name": "幻壊融門スクラップゲート"
     },
     {
+      "id": 160018053,
+      "name": "Destructor Integration Scrap Gate",
+      "japanese_name": "幻壊融門スクラップゲート"
+    },
+    {
       "id": 160018054,
       "name": "Legendary Scale Ruler",
+      "japanese_name": "幻の三角スケール"
+    },
+    {
+      "id": 160018054,
+      "name": "Phantasmal Triangular Scale",
       "japanese_name": "幻の三角スケール"
     },
     {
@@ -6497,8 +6597,18 @@
       "japanese_name": "幻壊兵ニッカ"
     },
     {
+      "id": 160021014,
+      "name": "Destructor Soldier Knikka",
+      "japanese_name": "幻壊兵ニッカ"
+    },
+    {
       "id": 160021015,
       "name": "Demolition Soldier Pokka",
+      "japanese_name": "幻壊兵ポッカ"
+    },
+    {
+      "id": 160021015,
+      "name": "Destructor Soldier Bokka",
       "japanese_name": "幻壊兵ポッカ"
     },
     {
@@ -6634,6 +6744,11 @@
     {
       "id": 160021042,
       "name": "Demolition Twin Princesses Haut-de-Chausses",
+      "japanese_name": "幻壊双姫オー・ド・ショース"
+    },
+    {
+      "id": 160021042,
+      "name": "Destructor Twin Princesses Haut-de-Chausses",
       "japanese_name": "幻壊双姫オー・ド・ショース"
     },
     {
@@ -9037,6 +9152,11 @@
       "japanese_name": "救惺の巫女"
     },
     {
+      "id": 160204044,
+      "name": "Priestess of Wise Salvation",
+      "japanese_name": "救惺の巫女"
+    },
+    {
       "id": 160204045,
       "name": "Star Restart",
       "japanese_name": "スター・リスタート"
@@ -9927,8 +10047,18 @@
       "japanese_name": "幻壊爆竜デンジャラス・バクハムート"
     },
     {
+      "id": 160208038,
+      "name": "Explosive Destructor Wyrm Dangerous Bakhamut",
+      "japanese_name": "幻壊爆竜デンジャラス・バクハムート"
+    },
+    {
       "id": 160208039,
       "name": "Demolition Charge Expert Warning Heavy Shock",
+      "japanese_name": "幻壊爆僚ワーニング・ヘビー・ショック"
+    },
+    {
+      "id": 160208039,
+      "name": "Destructor Detonator Heavy Contractor",
       "japanese_name": "幻壊爆僚ワーニング・ヘビー・ショック"
     },
     {
@@ -9949,6 +10079,11 @@
     {
       "id": 160208043,
       "name": "Demolition Soldier Hell Met",
+      "japanese_name": "幻壊兵ヘル・メット"
+    },
+    {
+      "id": 160208043,
+      "name": "Destructor Soldier Helmet",
       "japanese_name": "幻壊兵ヘル・メット"
     },
     {
@@ -9977,6 +10112,11 @@
       "japanese_name": "幻壊大鎧戸"
     },
     {
+      "id": 160208052,
+      "name": "Destructor Claw Shield",
+      "japanese_name": "幻壊大鎧戸"
+    },
+    {
       "id": 160208053,
       "name": "Demolition Survey",
       "japanese_name": "幻壊調査"
@@ -9989,6 +10129,11 @@
     {
       "id": 160208058,
       "name": "Demolition Art - Absolute Destruction",
+      "japanese_name": "幻壊奥義－一式攻事"
+    },
+    {
+      "id": 160208058,
+      "name": "Destructor Art - Total Destruction",
       "japanese_name": "幻壊奥義－一式攻事"
     },
     {
@@ -10947,6 +11092,11 @@
       "japanese_name": "アトラクト・ゴーレム"
     },
     {
+      "id": 160212026,
+      "name": "Attract Golem",
+      "japanese_name": "アトラクト・ゴーレム"
+    },
+    {
       "id": 160212027,
       "name": "Evil Bowler",
       "japanese_name": "イービル・ボーラー"
@@ -11059,6 +11209,11 @@
     {
       "id": 160212074,
       "name": "Star of the Beginning",
+      "japanese_name": "はじまりの星"
+    },
+    {
+      "id": 160212074,
+      "name": "Star of Beginning",
       "japanese_name": "はじまりの星"
     },
     {
@@ -12997,6 +13152,11 @@
       "japanese_name": "アステロイーバ"
     },
     {
+      "id": 160311019,
+      "name": "Astroeva",
+      "japanese_name": "アステロイーバ"
+    },
+    {
       "id": 160311022,
       "name": "Galactica Force",
       "japanese_name": "ギャラクティカ・フォース"
@@ -13627,13 +13787,28 @@
       "japanese_name": "幻竜帝リンドルム"
     },
     {
+      "id": 160324002,
+      "name": "Lindwurm the Mega Monarch",
+      "japanese_name": "幻竜帝リンドルム"
+    },
+    {
       "id": 160324003,
       "name": "Lindorm the Dragon Monarch",
       "japanese_name": "竜帝リンドルム"
     },
     {
+      "id": 160324003,
+      "name": "Lindwurm the Wyrm Monarch",
+      "japanese_name": "竜帝リンドルム"
+    },
+    {
       "id": 160324004,
       "name": "Drache the Dragon Vassal",
+      "japanese_name": "竜帝家臣ドラーヘ"
+    },
+    {
+      "id": 160324004,
+      "name": "Drahe the Wyrm Vassal",
       "japanese_name": "竜帝家臣ドラーヘ"
     },
     {
