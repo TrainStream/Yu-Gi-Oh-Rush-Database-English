@@ -1,8 +1,8 @@
-// ==UserScript==
+﻿// ==UserScript==
 // @name         Yu-Gi-Oh! Rush Database English
 // @namespace    local.rushdb.yugipedia-english
-// @version      0.3.1
-// @description  Replaces Japanese Rush Duel card details on Konami card pages with English data from the hosted database, falling back to Yugipedia.
+// @version      0.4.0
+// @description  Replaces Japanese Rush Duel card details on Konami card pages with English data from the hosted database, falling back to Yugipedia and Google Translate.
 // @author	 TrainStream
 // Written with Codex assistance.
 // @license	 https://github.com/TrainStream/Yu-Gi-Oh-Rush-Database-English/blob/main/LICENSE
@@ -11,6 +11,7 @@
 // @match        https://www.db.yugioh-card.com/rushdb/card_search.action*
 // @match        https://www.db.yugioh-card.com/rushdb/deck_search.action*
 // @match        https://www.db.yugioh-card.com/rushdb/member_deck.action*
+// @match        https://translate.google.com/*
 // @connect      api.github.com
 // @connect      raw.githubusercontent.com
 // @connect      yugipedia.com
@@ -20,6 +21,12 @@
 // @grant        GM_setValue
 // @grant        GM.getValue
 // @grant        GM.setValue
+// @grant        GM_deleteValue
+// @grant        GM.deleteValue
+// @grant        GM_listValues
+// @grant        GM.listValues
+// @grant        GM_openInTab
+// @grant        GM.openInTab
 // @run-at       document-idle
 // @updateURL    https://raw.githubusercontent.com/TrainStream/Yu-Gi-Oh-Rush-Database-English/main/yugioh-rush-database-english.meta.js
 // @downloadURL  https://raw.githubusercontent.com/TrainStream/Yu-Gi-Oh-Rush-Database-English/main/yugioh-rush-database-english.user.js
@@ -32,11 +39,29 @@
   const HOSTED_DATABASE_URL = "https://raw.githubusercontent.com/TrainStream/Yu-Gi-Oh-Rush-Database-English/main/Database/rush_yugipedia_english.json";
   const RELEASES_API_URL = "https://api.github.com/repos/TrainStream/Yu-Gi-Oh-Rush-Database-English/releases";
   const RELEASES_PAGE_URL = "https://github.com/TrainStream/Yu-Gi-Oh-Rush-Database-English/releases";
-  const SCRIPT_VERSION = "0.3.1";
+  const SCRIPT_VERSION = "0.4.0";
   const CACHE_PREFIX = "rushdb-yugipedia-english:";
   const ENABLED_KEY = "rushdb-yugipedia-english:enabled";
   const SORT_CATEGORIES_KEY = "rushdb-yugipedia-english:sort-categories";
+  const GOOGLE_DECK_TRANSLATION_KEY = "rushdb-yugipedia-english:google-deck-translation";
+  const GOOGLE_AUTO_TRANSLATION_KEY = "rushdb-yugipedia-english:google-auto-translation";
   const CONTROLS_MINIMIZED_KEY = "rushdb-yugipedia-english:controls-minimized";
+  const GOOGLE_DECK_CACHE_PREFIX = `${CACHE_PREFIX}google-deck-v1:`;
+  const GOOGLE_DECK_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+  const GOOGLE_DECK_CACHE_MAX_ENTRIES = 20000;
+  const GOOGLE_DECK_MAX_ENCODED_BATCH_LENGTH = 12000;
+  const GOOGLE_DECK_MAX_BATCH_CHARACTERS = 4500;
+  const GOOGLE_TRANSLATE_JOB_PREFIX = `${CACHE_PREFIX}google-window-job:`;
+  const GOOGLE_TRANSLATE_ACTIVE_JOB_KEY = `${CACHE_PREFIX}google-window-active-job`;
+  const GOOGLE_TRANSLATE_JOB_PARAM = "rushdb_job";
+  const GOOGLE_TRANSLATE_WORKER_PARAM = "rushdb_worker";
+  const GOOGLE_TRANSLATE_SESSION_PARAM = "rushdb_session";
+  const GOOGLE_TRANSLATE_WINDOW_NAME = "rushdbGoogleTranslateWorker";
+  const GOOGLE_TRANSLATE_WINDOW_TIMEOUT_MS = 30000;
+  const GOOGLE_TRANSLATE_RESULT_STABLE_MS = 100;
+  const GOOGLE_TRANSLATE_RESULT_FALLBACK_POLL_MS = 750;
+  const GOOGLE_TRANSLATE_JOB_MAX_AGE_MS = 2 * 60 * 1000;
+  const GOOGLE_TRANSLATE_WORKER_IDLE_TIMEOUT_MS = 2 * 60 * 1000;
   const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
   const CACHE_MAX_CARDS = 5000;
   const CARD_LOOKUP_PARALLELISM = 4;
@@ -61,16 +86,39 @@
   const isDeckPage = location.pathname.endsWith("/member_deck.action") && ope === "1";
   const isForbiddenLimitedPage = location.pathname.endsWith("/forbidden_limited.action");
   const isLabelOnlyPage = isDeckSearchPage || isCardSearchPage || isForbiddenLimitedPage;
+  const isGoogleDeckTextPage = isDeckSearchPage || isDeckPage;
+  const usesFloatingControls = isLabelOnlyPage;
+  const usesGoogleFloatingControls = isLabelOnlyPage || isDeckPage;
   const isKnownRushDbTranslationPage = isCardDetailPage || isCardListPage || isCardSearchPage || isDeckSearchPage || isDeckPage || isForbiddenLimitedPage;
   const originalData = isCardDetailPage ? captureOriginalData() : null;
   const deckOriginals = new Map();
+  const googleDeckTextOriginals = new Map();
+  const googleDeckAppliedText = new WeakMap();
   const inFlightCardLookups = new Map();
   let hostedDatabasePromise = null;
   let edoproRushCardsPromise = null;
   let deckYdkeCopyState = null;
+  let googleDeckTextTranslationRunId = 0;
+  let googleDeckTextTranslationPromise = null;
+  let googleDeckTextRestartRequested = false;
+  let googleDeckCacheObserver = null;
+  let googleDeckCacheObserverTimer = null;
+  let googleDeckTranslationEnabledState = false;
+  let googleTranslateWorkerSessionStarted = false;
+  let googleTranslateWorkerSessionId = "";
+  let googleTranslateWorkerTabHandle = null;
+  let googleTranslateStartPromise = null;
+  let googleTranslateAutoTimer = null;
 
   function forceVersionNoticeForTesting() {
     return false;
+  }
+
+  if (location.hostname === "translate.google.com") {
+    handleGoogleTranslateWorkerPage().catch((error) => {
+      console.error("[RushDB Yugipedia English] Google Translate window worker failed", error);
+    });
+    return;
   }
 
   if (!location.pathname.startsWith("/rushdb/")) {
@@ -89,10 +137,21 @@
       return;
     }
 
+    if (isGoogleDeckTextPage) {
+      await cleanupStaleGoogleTranslateJobs();
+    }
+
     const enabled = await isTranslationEnabled();
     const sortCategories = isDeckSearchPage ? await isCategorySortingEnabled() : false;
+    const googleDeckTranslation = isGoogleDeckTextPage ? await isGoogleDeckTranslationEnabled() : false;
+    googleDeckTranslationEnabledState = googleDeckTranslation;
+    const googleAutoTranslation = isGoogleDeckTextPage ? await isGoogleAutoTranslationEnabled() : false;
     installToggleStyles();
+    ensureFloatingControlsContainer();
     createToggle(enabled);
+    if (isGoogleDeckTextPage) {
+      createGoogleDeckTranslationControls(enabled, googleDeckTranslation, googleAutoTranslation);
+    }
     if (isDeckSearchPage) {
       createCategorySortToggle(sortCategories);
       createDeleteCacheButton();
@@ -129,7 +188,7 @@
     }
 
     if (isDeckSearchPage) {
-      translateDeckSearchPage();
+      await translateDeckSearchPage();
       return;
     }
 
@@ -143,6 +202,8 @@
 
   function restoreCurrentTarget() {
     if (isDeckPage) {
+      cancelGoogleDeckTextTranslation();
+      restoreGoogleDeckTextTranslations();
       restoreDeckData();
       return;
     }
@@ -153,6 +214,8 @@
     }
 
     if (isDeckSearchPage) {
+      cancelGoogleDeckTextTranslation();
+      restoreGoogleDeckTextTranslations();
       restoreDeckSearchCategoryOrder();
       restoreDeckData();
       return;
@@ -215,6 +278,15 @@
   async function translateDeckPage() {
     translateLimitBadges();
     const translatedLabels = translateDeckStaticLabels();
+    const cached = await isGoogleDeckTranslationEnabled()
+      ? applyCachedGoogleDeckTextTranslations()
+      : 0;
+    if (cached > 0) {
+      setGoogleDeckTranslationReport(
+        `Applied ${cached} cached Google translation ${cached === 1 ? "entry" : "entries"}.`
+      );
+    }
+    scheduleAutomaticGoogleTranslation(0);
     const deckYdkeEntries = getDeckYdkeEntries();
     const cardIds = getDeckCardIds();
     if (cardIds.length === 0) {
@@ -335,7 +407,909 @@
     if (await isCategorySortingEnabled()) {
       sortDeckSearchCategories();
     }
+    const cached = await isGoogleDeckTranslationEnabled()
+      ? applyCachedGoogleDeckTextTranslations()
+      : 0;
     setStatus(`Translated ${translated} deck search labels.`);
+    if (cached > 0) {
+      setGoogleDeckTranslationReport(
+        `Applied ${cached} cached Google translation ${cached === 1 ? "entry" : "entries"}.`
+      );
+    }
+    scheduleAutomaticGoogleTranslation(0);
+  }
+
+  function applyCachedGoogleDeckTextTranslations() {
+    if (!googleDeckTranslationEnabledState) {
+      return 0;
+    }
+    let applied = 0;
+    const nodes = getGoogleDeckTextTargets();
+    nodes.forEach((node) => {
+      const source = node.textContent || "";
+      if (!containsJapaneseDeckText(source)) {
+        return;
+      }
+      const parts = getGoogleDeckSourceParts(source);
+      const cached = readGoogleDeckTextCache(parts.content);
+      if (cached === null) {
+        return;
+      }
+      if (!googleDeckTextOriginals.has(node)) {
+        googleDeckTextOriginals.set(node, source);
+      }
+      setGoogleDeckNodeText(node, `${parts.leading}${cached}${parts.trailing}`);
+      applied += 1;
+    });
+    return applied;
+  }
+
+  function getGoogleDeckTextTargets() {
+    if (isDeckPage) {
+      const nodes = [];
+      const title = document.querySelector("#broad_title h1");
+      if (title) {
+        const walker = document.createTreeWalker(title, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) {
+          if (cleanText(walker.currentNode.textContent)) {
+            nodes.push(walker.currentNode);
+          }
+        }
+      }
+      const comment = document.querySelector("#article_body dd.text_set span.biko");
+      if (comment) {
+        nodes.push(comment);
+      }
+      return [...new Set(nodes)];
+    }
+
+    return [...new Set([
+      ...document.querySelectorAll("span.name"),
+      ...document.querySelectorAll("span.text"),
+    ])];
+  }
+
+  function isGoogleDeckNameTarget(node) {
+    const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    return Boolean(element && (element.matches("span.name") || element.closest("#broad_title h1")));
+  }
+
+  function containsJapaneseDeckText(value) {
+    const text = cleanText(value).replace(/卍/g, "");
+    return /[\u3040-\u30ff\uff66-\uff9f\u3400-\u4dbf\u4e00-\u9fff]/.test(text);
+  }
+
+  function setGoogleDeckNodeText(node, value) {
+    const text = String(value);
+    googleDeckAppliedText.set(node, text);
+    if (node.textContent !== text) {
+      node.textContent = text;
+    }
+  }
+
+  function installGoogleDeckCacheObserver() {
+    if (!isDeckSearchPage || googleDeckCacheObserver || typeof MutationObserver === "undefined") {
+      return;
+    }
+    const root = document.querySelector("#article_body") || document.body;
+    googleDeckCacheObserver = new MutationObserver((mutations) => {
+      const relevant = mutations.some((mutation) => {
+        const target = mutation.target && mutation.target.nodeType === Node.ELEMENT_NODE
+          ? mutation.target
+          : mutation.target && mutation.target.parentElement;
+        const deckText = target && target.closest && target.closest("span.name, span.text");
+        if (deckText) {
+          return googleDeckAppliedText.get(deckText) !== deckText.textContent;
+        }
+        return Array.from(mutation.addedNodes || []).some((node) => {
+          return node.nodeType === Node.ELEMENT_NODE
+            && (node.matches("span.name, span.text") || node.querySelector("span.name, span.text"));
+        });
+      });
+      if (!relevant) {
+        return;
+      }
+      clearTimeout(googleDeckCacheObserverTimer);
+      googleDeckCacheObserverTimer = setTimeout(async () => {
+        googleDeckCacheObserverTimer = null;
+        if (await isTranslationEnabled() && await isGoogleDeckTranslationEnabled()) {
+          applyCachedGoogleDeckTextTranslations();
+          scheduleAutomaticGoogleTranslation(150);
+        }
+      }, 100);
+    });
+    googleDeckCacheObserver.observe(root, { childList: true, subtree: true, characterData: true });
+  }
+
+  async function translateGoogleDeckText() {
+    if (googleDeckTextTranslationPromise) {
+      const activeTranslation = googleDeckTextTranslationPromise;
+      const result = await activeTranslation;
+      if (googleDeckTextRestartRequested
+        && await isTranslationEnabled()
+        && await isGoogleDeckTranslationEnabled()) {
+        googleDeckTextRestartRequested = false;
+        return translateGoogleDeckText();
+      }
+      return result;
+    }
+    googleDeckTextRestartRequested = false;
+    googleDeckTextTranslationPromise = performGoogleDeckTextTranslation();
+    try {
+      return await googleDeckTextTranslationPromise;
+    } finally {
+      googleDeckTextTranslationPromise = null;
+    }
+  }
+
+  async function performGoogleDeckTextTranslation() {
+    if (!isGoogleDeckTextPage || !(await isTranslationEnabled()) || !(await isGoogleDeckTranslationEnabled())) {
+      return 0;
+    }
+
+    const runId = ++googleDeckTextTranslationRunId;
+    const targets = getGoogleDeckTextTargets().filter((node) => {
+      const text = cleanText(node.textContent);
+      return text
+        && googleDeckAppliedText.get(node) !== node.textContent
+        && containsJapaneseDeckText(text);
+    });
+    if (targets.length === 0) {
+      return 0;
+    }
+
+    let completed = 0;
+    let translated = 0;
+    let failed = 0;
+    const targetLabel = isDeckPage ? "deck title and comment" : "deck names and descriptions";
+    setGoogleDeckTranslationReport(`Translating ${targetLabel}... 0/${targets.length}`);
+
+    const pending = [];
+    targets.forEach((node) => {
+      const source = node.textContent || "";
+      if (!googleDeckTextOriginals.has(node)) {
+        googleDeckTextOriginals.set(node, source);
+      }
+      const parts = getGoogleDeckSourceParts(source);
+      const cached = readGoogleDeckTextCache(parts.content);
+      if (cached !== null) {
+        setGoogleDeckNodeText(node, `${parts.leading}${cached}${parts.trailing}`);
+        completed += 1;
+        translated += 1;
+      } else {
+        pending.push({
+          node,
+          kind: isGoogleDeckNameTarget(node) ? "name" : "description",
+          ...parts,
+        });
+      }
+    });
+
+    const batches = buildGoogleDeckTextBatches(pending);
+    if (completed > 0) {
+      setGoogleDeckTranslationReport(`Translating ${targetLabel}... ${completed}/${targets.length}`);
+    }
+
+    let nextIndex = 0;
+    let lastFailure = "";
+    const worker = async () => {
+      while (nextIndex < batches.length) {
+        if (runId !== googleDeckTextTranslationRunId
+          || !(await isTranslationEnabled())
+          || !(await isGoogleDeckTranslationEnabled())) {
+          return;
+        }
+        const index = nextIndex;
+        nextIndex += 1;
+        const batch = batches[index];
+        const batchKind = batch[0].kind;
+        const phaseBatches = batches.filter((candidate) => candidate[0].kind === batchKind);
+        const phaseBatchIndex = batches.slice(0, index + 1)
+          .filter((candidate) => candidate[0].kind === batchKind)
+          .length;
+        const phaseLabel = isDeckPage
+          ? (batchKind === "name" ? "deck title" : "deck comment")
+          : `deck ${batchKind === "name" ? "names" : "descriptions"}`;
+        setGoogleDeckTranslationReport(
+          `Translating ${phaseLabel}... batch ${phaseBatchIndex}/${phaseBatches.length}`
+        );
+
+        try {
+          const result = await translateGoogleDeckBatchWithFallback(batch, async (successfulBatch, results) => {
+            if (runId !== googleDeckTextTranslationRunId
+              || !(await isTranslationEnabled())
+              || !(await isGoogleDeckTranslationEnabled())) {
+              return;
+            }
+            successfulBatch.forEach((item, itemIndex) => {
+              setGoogleDeckNodeText(item.node, `${item.leading}${results[itemIndex]}${item.trailing}`);
+              writeGoogleDeckTextCache(item.content, results[itemIndex]);
+              translated += 1;
+            });
+          });
+          failed += result.failed;
+          lastFailure = result.lastFailure || lastFailure;
+        } catch (error) {
+          failed += batch.length;
+          lastFailure = String(error && error.message || error);
+          console.warn("[RushDB Yugipedia English] Google deck-text translation failed", error);
+        }
+
+        completed = translated + failed;
+        if (runId === googleDeckTextTranslationRunId) {
+          setGoogleDeckTranslationReport(`Translating ${targetLabel}... ${completed}/${targets.length}`);
+        }
+      }
+    };
+
+    await worker();
+
+    if (runId !== googleDeckTextTranslationRunId) {
+      return translated;
+    }
+
+    if (failed > 0) {
+      setGoogleDeckTranslationReport(
+        `Google translated ${translated} deck text ${translated === 1 ? "entry" : "entries"}; ${failed} failed${lastFailure ? ` (${lastFailure})` : ""}.`,
+        translated === 0
+      );
+    } else {
+      setGoogleDeckTranslationReport(`Google translated ${translated} deck text ${translated === 1 ? "entry" : "entries"}.`);
+    }
+    return translated;
+  }
+
+  function getGoogleDeckSourceParts(source) {
+    const value = String(source || "");
+    const leading = value.match(/^\s*/)[0];
+    const trailing = value.match(/\s*$/)[0];
+    return {
+      leading,
+      content: value.slice(leading.length, value.length - trailing.length || undefined),
+      trailing,
+    };
+  }
+
+  function buildGoogleDeckTextBatches(items) {
+    const batches = [];
+    let batch = [];
+    let encodedLength = 0;
+    let characterCount = 0;
+    items.forEach((item) => {
+      const addedLength = encodeURIComponent(item.content).length + 40;
+      const addedCharacters = item.content.length + 24;
+      if (batch.length > 0
+        && (batch[0].kind !== item.kind
+          || encodedLength + addedLength > GOOGLE_DECK_MAX_ENCODED_BATCH_LENGTH
+          || characterCount + addedCharacters > GOOGLE_DECK_MAX_BATCH_CHARACTERS)) {
+        batches.push(batch);
+        batch = [];
+        encodedLength = 0;
+        characterCount = 0;
+      }
+      batch.push(item);
+      encodedLength += addedLength;
+      characterCount += addedCharacters;
+    });
+    if (batch.length > 0) {
+      batches.push(batch);
+    }
+    return batches;
+  }
+
+  async function getGoogleDeckTextTranslationBatch(batch) {
+    const separators = batch.slice(1).map((_, index) => `ZXQITEM${String(index).padStart(3, "0")}QXZ`);
+    let joined = batch[0].content;
+    for (let index = 1; index < batch.length; index += 1) {
+      joined += `\n${separators[index - 1]}\n${batch[index].content}`;
+    }
+    const translated = await getGoogleDeckTextTranslation(joined);
+    separators.forEach((separator) => {
+      if (!translated.includes(separator)) {
+        throw new Error(`Google Translate changed batch separator ${separator}`);
+      }
+    });
+    const pattern = separators.length > 0
+      ? new RegExp(`\\s*(?:${separators.map(escapeRegExp).join("|")})\\s*`, "g")
+      : null;
+    const results = pattern ? translated.split(pattern) : [translated];
+    if (results.length !== batch.length || results.some((result) => !result.trim())) {
+      throw new Error("Google Translate returned an invalid deck-text batch");
+    }
+    return results;
+  }
+
+  async function translateGoogleDeckBatchWithFallback(batch, onSuccess) {
+    try {
+      const results = await getGoogleDeckTextTranslationBatch(batch);
+      await onSuccess(batch, results);
+      return { failed: 0, lastFailure: "" };
+    } catch (error) {
+      if (Number(error && error.status) === 429) {
+        throw error;
+      }
+      const message = String(error && error.message || error);
+      const canBenefitFromSmallerBatch = /changed batch separator|invalid deck-text batch|empty translation/i.test(message);
+      if (batch.length <= 1 || !canBenefitFromSmallerBatch) {
+        return { failed: batch.length, lastFailure: message };
+      }
+
+      const middle = Math.ceil(batch.length / 2);
+      const left = await translateGoogleDeckBatchWithFallback(batch.slice(0, middle), onSuccess);
+      const right = await translateGoogleDeckBatchWithFallback(batch.slice(middle), onSuccess);
+      return {
+        failed: left.failed + right.failed,
+        lastFailure: right.lastFailure || left.lastFailure,
+      };
+    }
+  }
+
+  function cancelGoogleDeckTextTranslation() {
+    googleDeckTextTranslationRunId += 1;
+    googleDeckTextRestartRequested = true;
+  }
+
+  function restoreGoogleDeckTextTranslations() {
+    googleDeckTextOriginals.forEach((text, node) => {
+      if (!("isConnected" in node) || node.isConnected) {
+        googleDeckAppliedText.delete(node);
+        node.textContent = text;
+      }
+    });
+    googleDeckTextOriginals.clear();
+  }
+
+  function hasUntranslatedGoogleDeckText() {
+    return getGoogleDeckTextTargets()
+      .some((node) => {
+        const source = node.textContent || "";
+        if (googleDeckAppliedText.get(node) === source) {
+          return false;
+        }
+        if (!containsJapaneseDeckText(source)) {
+          return false;
+        }
+        return readGoogleDeckTextCache(getGoogleDeckSourceParts(source).content) === null;
+      });
+  }
+
+  function startGoogleTranslationWorker() {
+    if (googleTranslateStartPromise) {
+      return googleTranslateStartPromise;
+    }
+    applyCachedGoogleDeckTextTranslations();
+    if (!hasUntranslatedGoogleDeckText()) {
+      setGoogleDeckTranslationReport("All visible deck text is already translated or cached.");
+      return Promise.resolve(0);
+    }
+    const worker = getOrOpenGoogleTranslateWorkerWindow();
+    if (!worker) {
+      setGoogleDeckTranslationReport("Google Translate background tab was blocked.", true);
+      return Promise.resolve(0);
+    }
+    googleTranslateStartPromise = (async () => {
+      try {
+        if (!(await isTranslationEnabled()) || !(await isGoogleDeckTranslationEnabled())) {
+          return 0;
+        }
+        setGoogleDeckTranslationReport("Google Translate worker started.");
+        cancelGoogleDeckTextTranslation();
+        return await translateGoogleDeckText();
+      } finally {
+        updateGoogleDeckCacheButton();
+        await finishGoogleTranslateWorkerSession();
+      }
+    })();
+    googleTranslateStartPromise.finally(() => {
+      googleTranslateStartPromise = null;
+    }).catch(() => {});
+    return googleTranslateStartPromise;
+  }
+
+  function scheduleAutomaticGoogleTranslation(delay) {
+    clearTimeout(googleTranslateAutoTimer);
+    googleTranslateAutoTimer = setTimeout(async () => {
+      googleTranslateAutoTimer = null;
+      if (googleTranslateStartPromise
+        || !(await isTranslationEnabled())
+        || !(await isGoogleDeckTranslationEnabled())
+        || !(await isGoogleAutoTranslationEnabled())) {
+        return;
+      }
+      applyCachedGoogleDeckTextTranslations();
+      if (hasUntranslatedGoogleDeckText()) {
+        await startGoogleTranslationWorker();
+      }
+    }, Math.max(0, Number(delay) || 0));
+  }
+
+  async function getGoogleDeckTextTranslation(source) {
+    const leading = String(source).match(/^\s*/)[0];
+    const trailing = String(source).match(/\s*$/)[0];
+    const content = String(source).slice(leading.length, String(source).length - trailing.length || undefined);
+    if (!content) {
+      return source;
+    }
+
+    const googleText = await requestGoogleDeckTranslation(content);
+    if (!googleText.trim()) {
+      throw new Error("Google Translate returned an empty translation");
+    }
+
+    return `${leading}${googleText}${trailing}`;
+  }
+
+  async function requestGoogleDeckTranslation(text) {
+    if (!googleTranslateWorkerSessionStarted || !googleTranslateWorkerSessionId) {
+      throw new Error("Google Translate worker is not running. Click Translate Missing Text.");
+    }
+    const jobId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const jobKey = `${GOOGLE_TRANSLATE_JOB_PREFIX}${jobId}`;
+    const job = {
+      id: jobId,
+      source: String(text),
+      status: "pending",
+      createdAt: Date.now(),
+      sessionId: googleTranslateWorkerSessionId,
+    };
+    await setSharedGoogleJob(jobKey, job);
+    await setSharedGoogleJob(GOOGLE_TRANSLATE_ACTIVE_JOB_KEY, job);
+
+    const deadline = Date.now() + GOOGLE_TRANSLATE_WINDOW_TIMEOUT_MS;
+    try {
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const current = await getSharedGoogleJob(jobKey);
+        if (!current) {
+          continue;
+        }
+        if (current.status === "complete" && typeof current.translation === "string") {
+          return current.translation;
+        }
+        if (current.status === "error") {
+          const error = createGoogleDeckRequestError(current.httpStatus || 0);
+          error.message = current.message || "Google Translate window failed";
+          throw error;
+        }
+      }
+      throw new Error(`Google Translate window timed out after ${Math.round(GOOGLE_TRANSLATE_WINDOW_TIMEOUT_MS / 1000)} seconds.`);
+    } finally {
+      await clearSharedGoogleJob(jobKey);
+    }
+  }
+
+  function getOrOpenGoogleTranslateWorkerWindow() {
+    const sessionId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const workerParams = new URLSearchParams({
+      sl: "ja",
+      tl: "en",
+      op: "translate",
+      [GOOGLE_TRANSLATE_WORKER_PARAM]: "1",
+      [GOOGLE_TRANSLATE_SESSION_PARAM]: sessionId,
+    });
+    const workerUrl = `https://translate.google.com/?${workerParams.toString()}`;
+    const backgroundOptions = { active: false, insert: true, setParent: true };
+    try {
+      let openedTab = null;
+      if (typeof GM_openInTab === "function") {
+        openedTab = GM_openInTab(workerUrl, backgroundOptions);
+      } else if (typeof GM !== "undefined" && typeof GM.openInTab === "function") {
+        openedTab = GM.openInTab(workerUrl, backgroundOptions);
+      }
+      if (openedTab) {
+        googleTranslateWorkerSessionId = sessionId;
+        googleTranslateWorkerSessionStarted = true;
+        Promise.resolve(openedTab).then((tabHandle) => {
+          if (googleTranslateWorkerSessionId === sessionId) {
+            googleTranslateWorkerTabHandle = tabHandle || null;
+          } else if (tabHandle && typeof tabHandle.close === "function") {
+            tabHandle.close();
+          }
+        }).catch(() => {
+          if (googleTranslateWorkerSessionId === sessionId) {
+            googleTranslateWorkerSessionStarted = false;
+            googleTranslateWorkerSessionId = "";
+          }
+        });
+        return true;
+      }
+    } catch (_error) {
+      // Fall back to a popup when the userscript manager cannot open an inactive tab.
+    }
+
+    const worker = window.open("about:blank", GOOGLE_TRANSLATE_WINDOW_NAME, "popup=yes,width=560,height=720");
+    if (!worker) {
+      return false;
+    }
+    googleTranslateWorkerSessionId = sessionId;
+    googleTranslateWorkerSessionStarted = true;
+    try {
+      worker.document.title = "RushDB Google worker — starting";
+      worker.blur();
+      window.focus();
+      setTimeout(() => {
+        try {
+          worker.location.replace(workerUrl);
+          worker.blur();
+        } catch (_error) {
+          // Google may already have isolated the worker window.
+        }
+        window.focus();
+      }, 75);
+      setTimeout(() => window.focus(), 150);
+      setTimeout(() => window.focus(), 400);
+      setTimeout(() => window.focus(), 800);
+      setTimeout(() => window.focus(), 1500);
+    } catch (_error) {
+      // Browsers can restrict scripted focus changes; translation still works.
+    }
+    return true;
+  }
+
+  function closeGoogleTranslateWorkerWindow() {
+    finishGoogleTranslateWorkerSession().catch(() => {});
+  }
+
+  async function finishGoogleTranslateWorkerSession() {
+    const sessionId = googleTranslateWorkerSessionId;
+    const tabHandle = googleTranslateWorkerTabHandle;
+    googleTranslateWorkerSessionStarted = false;
+    googleTranslateWorkerSessionId = "";
+    googleTranslateWorkerTabHandle = null;
+    try {
+      if (sessionId) {
+        await setSharedGoogleJob(GOOGLE_TRANSLATE_ACTIVE_JOB_KEY, {
+          status: "finished",
+          sessionId,
+          finishedAt: Date.now(),
+        });
+      }
+    } finally {
+      if (tabHandle && typeof tabHandle.close === "function") {
+        tabHandle.close();
+      }
+    }
+  }
+
+  async function handleGoogleTranslateWorkerPage() {
+    const pageParams = new URLSearchParams(location.search);
+    const jobId = pageParams.get(GOOGLE_TRANSLATE_JOB_PARAM);
+    const sessionId = pageParams.get(GOOGLE_TRANSLATE_SESSION_PARAM) || "";
+    if (!jobId) {
+      if (pageParams.get(GOOGLE_TRANSLATE_WORKER_PARAM) === "1" && sessionId) {
+        await waitForNextGoogleTranslateJob("", sessionId);
+      }
+      return;
+    }
+    const jobKey = `${GOOGLE_TRANSLATE_JOB_PREFIX}${jobId}`;
+    let storedJob = null;
+    try {
+      storedJob = await getSharedGoogleJob(jobKey);
+    } catch (_error) {
+      // The URL still contains enough information to finish this job.
+    }
+    const job = storedJob && storedJob.id === jobId
+      ? storedJob
+      : {
+        id: jobId,
+        source: pageParams.get("text") || "",
+        status: "pending",
+        createdAt: Date.now(),
+        sessionId,
+      };
+
+    document.title = "RushDB Google worker — translating";
+    await publishGoogleTranslateWorkerResult(jobKey, { ...job, status: "loaded" });
+    const result = await waitForGoogleTranslatePageResult(job.source, GOOGLE_TRANSLATE_WINDOW_TIMEOUT_MS);
+    if (result.translation) {
+      await publishGoogleTranslateWorkerResult(jobKey, {
+        ...job,
+        status: "complete",
+        translation: result.translation,
+        completedAt: Date.now(),
+      });
+      document.title = "RushDB translation complete";
+      await waitForNextGoogleTranslateJob(jobId, sessionId);
+      return;
+    }
+
+    await publishGoogleTranslateWorkerResult(jobKey, {
+      ...job,
+      status: "error",
+      httpStatus: result.httpStatus || 0,
+      message: result.message || "Could not find a stable translation result in the Google Translate window.",
+    });
+    await waitForNextGoogleTranslateJob(jobId, sessionId);
+  }
+
+  function waitForGoogleTranslatePageResult(source, timeoutMs) {
+    return new Promise((resolve) => {
+      let observer = null;
+      let stableTimer = null;
+      let fallbackTimer = null;
+      let timeoutTimer = null;
+      let lastCandidate = "";
+      let settled = false;
+
+      const cleanup = () => {
+        if (observer) {
+          observer.disconnect();
+        }
+        clearTimeout(stableTimer);
+        clearInterval(fallbackTimer);
+        clearTimeout(timeoutTimer);
+      };
+      const finish = (result) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(result);
+      };
+      const confirmStableCandidate = () => {
+        const candidate = readGoogleTranslatePageResult(source);
+        if (candidate && candidate === lastCandidate) {
+          finish({ translation: candidate });
+          return;
+        }
+        checkPage();
+      };
+      const checkPage = () => {
+        if (settled) {
+          return;
+        }
+        const bodyText = document.body ? document.body.innerText : "";
+        if (/unusual traffic|automated queries|captcha|not a robot|ロボットではありません/i.test(bodyText)) {
+          finish({
+            httpStatus: 429,
+            message: "Google Translate displayed an anti-automation or CAPTCHA page.",
+          });
+          return;
+        }
+
+        const candidate = readGoogleTranslatePageResult(source);
+        if (!candidate) {
+          lastCandidate = "";
+          clearTimeout(stableTimer);
+          stableTimer = null;
+          return;
+        }
+        if (candidate !== lastCandidate) {
+          lastCandidate = candidate;
+          clearTimeout(stableTimer);
+          stableTimer = setTimeout(confirmStableCandidate, GOOGLE_TRANSLATE_RESULT_STABLE_MS);
+        }
+      };
+
+      if (typeof MutationObserver !== "undefined" && document.documentElement) {
+        observer = new MutationObserver(checkPage);
+        observer.observe(document.documentElement, {
+          childList: true,
+          subtree: true,
+          characterData: true,
+        });
+      }
+      fallbackTimer = setInterval(checkPage, GOOGLE_TRANSLATE_RESULT_FALLBACK_POLL_MS);
+      timeoutTimer = setTimeout(() => finish({
+        message: "Could not find a stable translation result in the Google Translate window.",
+      }), Math.max(1, Number(timeoutMs) || GOOGLE_TRANSLATE_WINDOW_TIMEOUT_MS));
+      checkPage();
+    });
+  }
+
+  async function publishGoogleTranslateWorkerResult(jobKey, result) {
+    await setSharedGoogleJob(jobKey, result);
+  }
+
+  async function waitForNextGoogleTranslateJob(previousJobId, sessionId) {
+    document.title = "RushDB Google worker — waiting";
+    const idleDeadline = Date.now() + GOOGLE_TRANSLATE_WORKER_IDLE_TIMEOUT_MS;
+    while (Date.now() < idleDeadline) {
+      let nextJob = null;
+      try {
+        nextJob = await getSharedGoogleJob(GOOGLE_TRANSLATE_ACTIVE_JOB_KEY);
+      } catch (_error) {
+        // Keep waiting; temporary storage failures can recover.
+      }
+      if (nextJob && nextJob.status === "finished" && nextJob.sessionId === sessionId) {
+        document.title = "RushDB Google worker — complete";
+        await clearSharedGoogleJob(GOOGLE_TRANSLATE_ACTIVE_JOB_KEY);
+        window.close();
+        return;
+      }
+      if (nextJob
+        && nextJob.status === "pending"
+        && nextJob.sessionId === sessionId
+        && Date.now() - Number(nextJob.createdAt || 0) > GOOGLE_TRANSLATE_JOB_MAX_AGE_MS) {
+        await setSharedGoogleJob(`${GOOGLE_TRANSLATE_JOB_PREFIX}${nextJob.id}`, {
+          ...nextJob,
+          status: "error",
+          message: "Google Translate job expired before the worker could process it.",
+        });
+        await clearSharedGoogleJob(GOOGLE_TRANSLATE_ACTIVE_JOB_KEY);
+        document.title = "RushDB Google worker — expired";
+        window.close();
+        return;
+      }
+      if (nextJob
+        && nextJob.status === "pending"
+        && nextJob.id !== previousJobId
+        && nextJob.sessionId === sessionId) {
+        const nextParams = new URLSearchParams({
+          sl: "ja",
+          tl: "en",
+          text: String(nextJob.source || ""),
+          op: "translate",
+          [GOOGLE_TRANSLATE_JOB_PARAM]: nextJob.id,
+          [GOOGLE_TRANSLATE_SESSION_PARAM]: sessionId,
+        });
+        location.replace(`https://translate.google.com/?${nextParams.toString()}`);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    const activeJob = await getSharedGoogleJob(GOOGLE_TRANSLATE_ACTIVE_JOB_KEY).catch(() => null);
+    if (activeJob && activeJob.sessionId === sessionId) {
+      await clearSharedGoogleJob(GOOGLE_TRANSLATE_ACTIVE_JOB_KEY).catch(() => {});
+    }
+    document.title = "RushDB Google worker — idle timeout";
+    window.close();
+  }
+
+  function readGoogleTranslatePageResult(source) {
+    const resultStrategies = [
+      () => joinGoogleTranslateResultParts(document.querySelectorAll('[jsname="W297wb"]')),
+      () => joinGoogleTranslateResultParts(document.querySelectorAll("span.ryNqvb")),
+      () => {
+        const node = document.querySelector('[aria-label="Translation results"]');
+        return node ? node.textContent || "" : "";
+      },
+    ];
+
+    for (const strategy of resultStrategies) {
+      const value = String(strategy() || "").trim();
+      if (value) {
+        return value;
+      }
+    }
+    return Array.from(document.querySelectorAll("textarea"))
+      .map((node) => String(node.value || "").trim())
+      .find((value) => value && value !== String(source).trim()) || "";
+  }
+
+  function joinGoogleTranslateResultParts(nodes) {
+    return Array.from(nodes)
+      .map((node) => String(node.textContent || ""))
+      .filter(Boolean)
+      .reduce((joined, part) => {
+        if (!joined || /\s$/.test(joined) || /^\s/.test(part)
+          || /^[,.;:!?…、。！？）)\]}]/.test(part)
+          || /[(\[\{「『]$/.test(joined)) {
+          return joined + part;
+        }
+        return `${joined} ${part}`;
+      }, "");
+  }
+
+  function createGoogleDeckRequestError(status) {
+    const error = new Error(`Google Translate returned HTTP ${status}`);
+    error.status = Number(status) || 0;
+    return error;
+  }
+
+  function getGoogleDeckTextCacheKey(source) {
+    let hash = 2166136261;
+    for (let index = 0; index < source.length; index += 1) {
+      hash ^= source.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `${GOOGLE_DECK_CACHE_PREFIX}${(hash >>> 0).toString(36)}`;
+  }
+
+  function readGoogleDeckTextCache(source) {
+    try {
+      const key = getGoogleDeckTextCacheKey(source);
+      const raw = localStorage.getItem(key);
+      if (!raw) {
+        return null;
+      }
+      const cached = JSON.parse(raw);
+      if (!cached || cached.source !== source || typeof cached.translated !== "string"
+        || Date.now() - cached.savedAt > GOOGLE_DECK_CACHE_TTL_MS) {
+        localStorage.removeItem(key);
+        return null;
+      }
+      return cached.translated;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function writeGoogleDeckTextCache(source, translated) {
+    const key = getGoogleDeckTextCacheKey(source);
+    const value = JSON.stringify({
+      savedAt: Date.now(),
+      source,
+      translated,
+    });
+    try {
+      localStorage.setItem(key, value);
+      return true;
+    } catch (_error) {
+      // A full cache can reject the new value before post-write maintenance runs.
+      pruneGoogleDeckTextCache(true);
+      try {
+        localStorage.setItem(key, value);
+        return true;
+      } catch (_retryError) {
+        // Translation still works when local storage is unavailable or remains full.
+        return false;
+      }
+    }
+  }
+
+  function pruneGoogleDeckTextCache(freeQuotaSpace) {
+    const stats = { count: 0, bytes: 0, removed: 0 };
+    try {
+      const entries = [];
+      const expiredKeys = [];
+      for (let index = 0; index < localStorage.length; index += 1) {
+        const key = localStorage.key(index);
+        if (!key || !key.startsWith(GOOGLE_DECK_CACHE_PREFIX)) {
+          continue;
+        }
+        const value = localStorage.getItem(key) || "";
+        let cached = null;
+        try {
+          cached = JSON.parse(value || "null");
+        } catch (_error) {
+          cached = null;
+        }
+        if (!cached || !cached.savedAt || Date.now() - cached.savedAt > GOOGLE_DECK_CACHE_TTL_MS) {
+          expiredKeys.push(key);
+        } else {
+          entries.push({ key, value, savedAt: cached.savedAt });
+        }
+      }
+      expiredKeys.forEach((key) => localStorage.removeItem(key));
+      entries.sort((a, b) => b.savedAt - a.savedAt);
+      const retained = entries.slice(0, GOOGLE_DECK_CACHE_MAX_ENTRIES);
+      const overflow = entries.slice(GOOGLE_DECK_CACHE_MAX_ENTRIES);
+      if (freeQuotaSpace && retained.length > 0) {
+        const quotaEvictions = Math.max(1, Math.ceil(retained.length * 0.05));
+        overflow.push(...retained.splice(-quotaEvictions));
+      }
+      overflow.forEach((entry) => localStorage.removeItem(entry.key));
+      retained.forEach((entry) => {
+        stats.count += 1;
+        stats.bytes += estimateStorageBytes(entry.key) + estimateStorageBytes(entry.value);
+      });
+      stats.removed = expiredKeys.length + overflow.length;
+    } catch (_error) {
+      // Cache pruning is best-effort.
+    }
+    return stats;
+  }
+
+  function deleteGoogleDeckTextCache() {
+    let deleted = 0;
+    try {
+      const keys = [];
+      for (let index = 0; index < localStorage.length; index += 1) {
+        const key = localStorage.key(index);
+        if (key && key.startsWith(GOOGLE_DECK_CACHE_PREFIX)) {
+          keys.push(key);
+        }
+      }
+      keys.forEach((key) => {
+        localStorage.removeItem(key);
+        deleted += 1;
+      });
+    } catch (_error) {
+      // Cache deletion is best-effort.
+    }
+    return deleted;
   }
 
   function translateCardSearchPage() {
@@ -1700,12 +2674,17 @@
   }
 
   function translateCardStaticLabels() {
+    const cardSearchMaps = getCardSearchTranslationMaps();
     const labels = {
+      "\u3053\u306e\u30ab\u30fc\u30c9\u306e\u8a73\u7d30\u3092\u8868\u793a": "View This Card's Details",
+      "\u3053\u306e\u30ab\u30fc\u30c9\u306e\uff31\uff06\uff21\u3092\u8868\u793a": "View This Card's Q&A",
       "\u3053\u306e\u30ab\u30fc\u30c9\u3092\u4f7f\u7528\u3057\u305f\u30c7\u30c3\u30ad\u3092\u691c\u7d22": "Search Decks That Use This Card",
       "\u3053\u306e\u30ab\u30fc\u30c9\u306e\u95a2\u9023\u30ab\u30fc\u30c9\u3092\u898b\u308b": "View Related Cards",
       "\u53ce\u9332\u30b7\u30ea\u30fc\u30ba": "Sets",
     };
     const roots = [
+      ...document.querySelectorAll("li > span"),
+      document.querySelector("#article_body"),
       document.querySelector("#title_msg"),
       document.querySelector("#CardSet"),
       document.querySelector("#update_list"),
@@ -1727,6 +2706,9 @@
         Object.keys(labels).forEach((label) => {
           translatedText = translatedText.split(label).join(labels[label]);
         });
+        if (translatedText === originalText && node.parentElement && node.parentElement.closest("#form_search")) {
+          translatedText = translateCardSearchText(originalText, cardSearchMaps);
+        }
 
         if (translatedText === originalText) {
           return;
@@ -1738,6 +2720,7 @@
       });
     });
 
+    translated += translateCardSearchFormValues(cardSearchMaps);
     return translated;
   }
 
@@ -1967,6 +2950,7 @@
     }, getRarityTranslationLabels());
     const cardSearchMaps = getCardSearchTranslationMaps();
     const roots = [
+      document.querySelector("#title_msg"),
       document.querySelector("#mode_set"),
       document.querySelector(".sort_set"),
       document.querySelector("#icon_sort"),
@@ -2006,6 +2990,7 @@
 
   function translateForbiddenLimitedStaticLabels() {
     const labels = {
+      "\u30ea\u30df\u30c3\u30c8\u30ec\u30ae\u30e5\u30ec\u30fc\u30b7\u30e7\u30f3\u3068\u306f\u3001\u904a\u622f\u738b\u30e9\u30c3\u30b7\u30e5\u30c7\u30e5\u30a8\u30eb\u306e\u516c\u5f0f\u5927\u4f1a\u3067\u30c7\u30c3\u30ad\u306b\u5165\u308c\u308b\u4e8b\u304c\u3067\u304d\u306a\u3044\u30ab\u30fc\u30c9\u3084\u679a\u6570\u5236\u9650\u304c\u3042\u308b\u30ab\u30fc\u30c9\u306e\u4e8b\u3092\u3044\u3044\u307e\u3059\u3002": "The Limit Regulation identifies cards that cannot be included in a Deck, or whose number of copies is restricted, in official Yu-Gi-Oh! Rush Duel tournaments.",
       "\u30ea\u30df\u30c3\u30c8\u30ec\u30ae\u30e5\u30ec\u30fc\u30b7\u30e7\u30f3": "Limit Regulation",
       "\u66f4\u65b0\u306e\u3042\u3063\u305f\u30ab\u30fc\u30c9": "Updated Cards",
       "\u66f4\u65b0\u65e5": "Updated",
@@ -2023,6 +3008,7 @@
       "\u5236\u9650\u304c\u89e3\u9664\u3055\u308c\u305f\u30ab\u30fc\u30c9\u3067\u3059\u3002": "Cards whose restrictions have been removed.",
     };
     const roots = [
+      document.querySelector("#title_msg"),
       document.querySelector("#article_body"),
       document.querySelector("#broad_title"),
       document.querySelector("#pan_nav"),
@@ -2112,6 +3098,10 @@
       });
     }
 
+    translated = translated.replace(
+      /\u691c\u7d22\u7d50\u679c\s*(\d+)\s*\u4ef6\u4e2d\s*(\d+)\s*[\uff5e\u301c~-]\s*(\d+)\s*\u4ef6\u3092\u8868\u793a/g,
+      "Showing $2–$3 of $1 results"
+    );
     translated = translated.replace(/\u5168\s*(\d+)\s*\u7a2e/g, "$1 cards");
     translated = translated.replace(/(\d{4})\u5e74(\d{2})\u6708(\d{2})\u65e5/g, "$1-$2-$3");
     return translated;
@@ -2499,7 +3489,17 @@
   }
 
   function sortDeckSearchCategories() {
+    const categoryTranslationMap = getDeckSearchTranslationMaps().exact;
+    const knownCategoryNames = new Set([
+      ...Object.keys(categoryTranslationMap),
+      ...Object.values(categoryTranslationMap),
+    ].map(cleanText));
     const categoryCount = sortDeckSearchOptionGroup("#dckCategoryMst", (option) => {
+      if (!knownCategoryNames.has(getOriginalOptionText(option))) {
+        setDeckSearchNewOptionMarker(option, true);
+        return "new";
+      }
+      setDeckSearchNewOptionMarker(option, false);
       const label = cleanText(option.textContent || option.label);
       return label.startsWith("\ud83e\uddd1") ? "secondary" : "primary";
     });
@@ -2519,6 +3519,7 @@
 
     const options = Array.from(select.options);
     const placeholders = [];
+    const newOptions = [];
     const primary = [];
     const secondary = [];
 
@@ -2527,6 +3528,8 @@
       const label = cleanText(option.textContent || option.label);
       if (!option.value || /^[-\s]+$/.test(label)) {
         placeholders.push(option);
+      } else if (getGroup(option) === "new") {
+        newOptions.push(option);
       } else if (getGroup(option) === "secondary") {
         secondary.push(option);
       } else {
@@ -2541,10 +3544,19 @@
       });
     };
 
+    newOptions.sort(compareOptions);
     primary.sort(compareOptions);
     secondary.sort(compareOptions);
-    [...placeholders, ...primary, ...secondary].forEach((option) => select.appendChild(option));
-    return primary.length + secondary.length;
+    [...placeholders, ...newOptions, ...primary, ...secondary].forEach((option) => select.appendChild(option));
+    return newOptions.length + primary.length + secondary.length;
+  }
+
+  function setDeckSearchNewOptionMarker(option, marked) {
+    const marker = "[NEW] ";
+    const label = option.label || option.textContent || "";
+    const unmarkedLabel = label.startsWith(marker) ? label.slice(marker.length) : label;
+    option.label = marked ? marker + unmarkedLabel : unmarkedLabel;
+    option.textContent = option.label;
   }
 
   function restoreDeckSearchCategoryOrder() {
@@ -2558,6 +3570,7 @@
       return;
     }
 
+    Array.from(select.options).forEach((option) => setDeckSearchNewOptionMarker(option, false));
     Array.from(select.options)
       .sort((a, b) => {
         const aRecord = deckOriginals.get(a) || {};
@@ -2581,6 +3594,7 @@
 
   function getDeckSearchTranslationMaps() {
     const exact = {
+      "遊戯王ラッシュデュエルのデッキレシピ一覧です。デッキを選択するとより詳細なデッキレシピを参照する事ができます。大会優勝デッキ/大会入賞デッキの検索や、特定カードを使用しているデッキの検索ができます。また、デュエルリンクスやマスターデュエルで使用できるデッキも登録されていますので、参考にしてプレーしてください。": "Browse Yu-Gi-Oh! Rush Duel Deck recipes. Select a Deck to view its detailed recipe. You can search for tournament-winning or tournament-placing Decks, as well as Decks that use specific cards. Decks usable in Duel Links and Master Duel are also registered, so use them as references when playing.",
       "デッキ検索": "Deck Search",
       "デッキ名": "Deck Name",
       "デッキコード": "Deck Code",
@@ -2618,7 +3632,8 @@
       "デッキ名の昇順, 更新日付の昇順": "Deck Name Ascending, Update Date Ascending",
       "デッキ名の降順, 更新日付の昇順": "Deck Name Descending, Update Date Ascending"
     };
-    const categoryTranslations = [{"value":["OTS","OuTerverSe"],"Count":2},{"value":["安立マニャ","🧑 Manya Atachi"],"Count":2},{"value":["安立ミミ","🧑 Mimi Imimi"],"Count":2},{"value":["安立ヨシオ","🧑 Yosh Imimi"],"Count":2},{"value":["アニマジカ","Animagica"],"Count":2},{"value":["アビスカイト","Abysskite"],"Count":2},{"value":["洗井新太","🧑 Buff Grimes"],"Count":2},{"value":["アリ","Ant"],"Count":2},{"value":["有栖川ジャンゴ","🧑 Janko Entant"],"Count":2},{"value":["暗黒騎士ガイア","Gaia the Fierce Knight"],"Count":2},{"value":["暗黒シャイン王アークトーク","Dark Shine King Arktalk"],"Count":2},{"value":["アンティーク・ギア","Ancient Gear"],"Count":2},{"value":["アーツエンジェル","Arts Angel"],"Count":2},{"value":["行手内造","🧑 Naizo Ikatenai"],"Count":2},{"value":["イス","Chair"],"Count":2},{"value":["いとをかし","Itowokashi"],"Count":2},{"value":["海","Umi"],"Count":2},{"value":["エクスキューティー","Excutie"],"Count":2},{"value":["エポック","🧑 Epoch"],"Count":2},{"value":["焔魔","Blaze Fiend"],"Count":2},{"value":["王道遊歩","🧑 Yuamu Ohdo"],"Count":2},{"value":["王道遊我","🧑 Yuga Ohdo"],"Count":2},{"value":["王道遊飛","🧑 Yuhi Ohdo"],"Count":2},{"value":["大森麺三郎","🧑 Saburamen"],"Count":2},{"value":["お注射天使リリー","Injection Fairy Lily"],"Count":2},{"value":["御前乃ウシロウ","🧑 Toombs"],"Count":2},{"value":["オリジナル","Original"],"Count":2},{"value":["オーティス","🧑 Otes"],"Count":2},{"value":["カイゾー","🧑 Kaizo"],"Count":2},{"value":["怪談","Kaidan / Ghost Story"],"Count":2},{"value":["カオス・ソルジャー","Black Luster Soldier"],"Count":2},{"value":["花牙","Gekka / Flower Fang"],"Count":2},{"value":["籠たま子","🧑 Tamako Kago"],"Count":2},{"value":["かっぱ","Kappa"],"Count":2},{"value":["火麺","Kamen / Fire Noodle"],"Count":2},{"value":["合羽井テル","🧑 Teru Kawai"],"Count":2},{"value":["ガクティング","Gakuting"],"Count":2},{"value":["ガジェット","Gadget"],"Count":2},{"value":["楽鬼","Gakki / Music Princess"],"Count":2},{"value":["ガーゼット","Garzett"],"Count":2},{"value":["輝鋼超竜デヴァスター・オケアビス","Devastar Okeabyss, the Steel Shine Super Dragon"],"Count":2},{"value":["CAN：D","Can:D"],"Count":2},{"value":["霧島ロア","🧑 Roa Kassidy"],"Count":2},{"value":["霧島ロミン","🧑 Romin Kassidy"],"Count":2},{"value":["霧島ロンドン","🧑 London Kassidy"],"Count":2},{"value":["霧島ロヴィアン","🧑 Rovian Kassidy"],"Count":2},{"value":["ギャラクティカ・オブリビオン","Galactica Oblivion"],"Count":2},{"value":["クァイドゥール・ベルギャー","🧑 Kuaidul Velgear"],"Count":2},{"value":["グラット石田","🧑 Glatt Ishida"],"Count":2},{"value":["グレート・モス","Great Moth"],"Count":2},{"value":["恵雷の精霊","Graceful Thunder Spirit"],"Count":2},{"value":["ケミカライズ","Chemicalize"],"Count":2},{"value":["幻壊","Genkai / Phantom Ruin"],"Count":2},{"value":["幻書鳩の騎士ナイト・ヴィジョン","Knight Vision, the Phantom Pigeon Knight"],"Count":2},{"value":["幻刃","Phantom Blade / Genba"],"Count":2},{"value":["コスモス姫","Princess Cosmos"],"Count":2},{"value":["昆遁忍虫","Konton Ninja Insect / Chaotic Ninja Insect"],"Count":2},{"value":["後藤ハント","🧑 Hunt Goto"],"Count":2},{"value":["ゴーハ・ユウナ","🧑 Yuna Goha"],"Count":2},{"value":["西園寺ネイル","🧑 Nail Saionji"],"Count":2},{"value":["最強戦旗","Strongest Battle Flag"],"Count":2},{"value":["彩光のプリマギターナ","Prima Guitarna the Shining Superstar"],"Count":2},{"value":["サイバースパイス","Cyber Spice"],"Count":2},{"value":["サイバー・ドラゴン","Cyber Dragon"],"Count":2},{"value":["サンダービート","Thunderbeat"],"Count":2},{"value":["ザイオン","🧑 Zaion"],"Count":2},{"value":["ザ☆ドラギアス","The☆Dragias"],"Count":2},{"value":["ザ☆ニャンデスター","The☆Meowdestar"],"Count":2},{"value":["ザ☆ルーグ","🧑 The☆Luge"],"Count":2},{"value":["精霊義賊","Spirit Thief"],"Count":2},{"value":["シューバッハ","🧑 Schubel Quill"],"Count":2},{"value":["深淵海竜アビス・クラーケン","Abyss Kraken, the Deep-Sea Dragon"],"Count":2},{"value":["深淵竜神アビス・ポセイドラ","Abyss Poseidra, the Abyss Dragon Deity"],"Count":2},{"value":["真実爆郎","🧑 Scoop Pilman"],"Count":2},{"value":["CPT","Cybersepice"],"Count":2},{"value":["邪犬","Mean Mutt"],"Count":2},{"value":["ジャージ・デビルズ","Jersey Devils"],"Count":2},{"value":["獣機界","Beast Gear World"],"Count":2},{"value":["ジョインテック","Jointech"],"Count":2},{"value":["人造人間","Jinzo"],"Count":2},{"value":["スイーツ過去子","🧑 Sweets Kakoko"],"Count":2},{"value":["寿司天使","Sushi Angel"],"Count":2},{"value":["スターキャット","Star Cat"],"Count":2},{"value":["スターズハンド","Star’s Hand"],"Count":2},{"value":["スパークハーツ","Sparkhearts"],"Count":2},{"value":["スピード","Speed"],"Count":2},{"value":["スーパーマキシマムトレモロガールズ","Super Maximum Tremolo Girls"],"Count":2},{"value":["スーパー・ウォー・ライオン","Super War-Lion"],"Count":2},{"value":["ズウィージョウ","🧑 Zuwijo Zwil Velgear"],"Count":2},{"value":["聖麗","Sacred Splendor"],"Count":2},{"value":["セバスチャン","🧑 Seatbastian"],"Count":2},{"value":["セブンスロード","Sevens Road"],"Count":2},{"value":["セレブローズ","Celeb Rose"],"Count":2},{"value":["千年の盾","Millennium Shield"],"Count":2},{"value":["絶望狂魔","Despair Demon"],"Count":2},{"value":["ゼラ","Zera"],"Count":2},{"value":["蒼救","Azure Savior / Soukyu"],"Count":2},{"value":["蒼月学人","🧑 Gavin Sogetsu"],"Count":2},{"value":["蒼月マグト","🧑 Maguto Sogetsu"],"Count":2},{"value":["蒼月マナブ","🧑 Maddox Sogetsu"],"Count":2},{"value":["象明寺キャタピリオ","🧑 Caterpillio Elephantus"],"Count":2},{"value":["タイガー","🧑 Tiadosia “Tiger” Kallister"],"Count":2},{"value":["平月太","🧑 Tyler Getz"],"Count":2},{"value":["田崎ギャリアン","🧑 Galian Townsend"],"Count":2},{"value":["田崎さん","🧑 Galixon Townsend"],"Count":2},{"value":["タマボット","Tamabot"],"Count":2},{"value":["ダイスマイト","Dicemite"],"Count":2},{"value":["ダイナ－ミクス","Dynamix"],"Count":2},{"value":["ダークマイスター","🧑 Dark Meister"],"Count":2},{"value":["ダークマター","Dark Matter"],"Count":2},{"value":["ダークメン","🧑 Darkmen"],"Count":2},{"value":["チュパ太郎","🧑 Chupataro Kaburagi"],"Count":2},{"value":["帝王","Monarch"],"Count":2},{"value":["手乗りドラコ","Tiny Draco"],"Count":2},{"value":["纏竜","Wrapped Dragon"],"Count":2},{"value":["ディアン・ケト","Dian Keto"],"Count":2},{"value":["ディノワ","🧑 Dinois Velgear"],"Count":2},{"value":["デビルズ・ミラー","Fiend’s Mirror"],"Count":2},{"value":["デーモンの召喚","Summoned Skull"],"Count":2},{"value":["トランザム・ライナック","Transam Linac"],"Count":2},{"value":["ドラギアス","Dragias"],"Count":2},{"value":["ドラゴニック","Dragonic"],"Count":2},{"value":["ナナホ","🧑 Nanaho Nanahoshi"],"Count":2},{"value":["七星テンテン","🧑 Tenten Nanahoshi"],"Count":2},{"value":["七星蘭世","🧑 Rayne Nanahoshi"],"Count":2},{"value":["七星ランラン","🧑 Ranran Nanahoshi"],"Count":2},{"value":["七星凛之介","🧑 Rino Nanahoshi"],"Count":2},{"value":["ヌードル宇宙子","🧑 Celestia Noodlina"],"Count":2},{"value":["N","Normal Monsters"],"Count":2},{"value":["ネクメイド","Necmaid"],"Count":2},{"value":["猫山シュレディンガー","🧑 Schrodinger Nekoyama"],"Count":2},{"value":["ノムラトダマス","🧑 Nomuratodamas"],"Count":2},{"value":["ハイテクドラゴン","High-Tech Dragon"],"Count":2},{"value":["ハイブリッドライブ","Hybridrive"],"Count":2},{"value":["白佛カン","🧑 Kan Hakubutsu"],"Count":2},{"value":["はぐれ使い魔","Stray Familiar"],"Count":2},{"value":["ハトラップ","🧑 Pigetrap"],"Count":2},{"value":["ハングリーバーガー","Hungry Burger"],"Count":2},{"value":["叛骨","Defiant Soul"],"Count":2},{"value":["ハンディーレディ","Handy Lady"],"Count":2},{"value":["ハーピィ","Harpie"],"Count":2},{"value":["バスター・ブレイダー","Buster Blader"],"Count":2},{"value":["バニシング・ヘリアカルライザー","Vanishing Heliacal Riser"],"Count":2},{"value":["秘密捜査官","Secret Investigator"],"Count":2},{"value":["火雷神サンダーボールド","Thunderbold, the Blazing Thunder Deity"],"Count":2},{"value":["平森みつ子","🧑 Terza Flatwood"],"Count":2},{"value":["HERO","HERO"],"Count":2},{"value":["ビック・バイパー","Vic Viper"],"Count":2},{"value":["F・G・D","Five-Headed Dragon"],"Count":2},{"value":["フィンガー地下子","🧑 Terra Kneadalina"],"Count":2},{"value":["フォローウィング・ワールド","Follow-Wing World"],"Count":2},{"value":["フラッシュ海深子","🧑 Flash Umiko"],"Count":2},{"value":["ブラスデス","Brassdes"],"Count":2},{"value":["ブラックカオス","Black Chaos"],"Count":2},{"value":["ブラック・マジシャン","Dark Magician"],"Count":2},{"value":["青眼の白龍","Blue-Eyes White Dragon"],"Count":2},{"value":["プライム","Praime"],"Count":2},{"value":["P・M","Plasmatic"],"Count":2},{"value":["プリンセスG","🧑 Princess G"],"Count":2},{"value":["ベリーフレッシュ","Berry Fresh"],"Count":2},{"value":["報道","News / Reporting"],"Count":2},{"value":["ボチ","🧑 Bochi / Graves"],"Count":2},{"value":["巻寿司子","🧑 Sushiko Maki"],"Count":2},{"value":["マグナム・オーバーロード","Magnum Overlord"],"Count":2},{"value":["マグネット・ウォリアー","Magnet Warrior"],"Count":2},{"value":["マグロ","Maguro / Tuna"],"Count":2},{"value":["間黒七海","🧑 Skipjack"],"Count":2},{"value":["魔将","Fiendish Commander / Mashou"],"Count":2},{"value":["魔法羊女メェ～グちゃん","Magical Sheep Girl Meeeg-chan"],"Count":2},{"value":["夢中","Delirium"],"Count":2},{"value":["六葉アサカ","🧑 Asaka Mutsuba"],"Count":2},{"value":["六葉アサナ","🧑 Asana Mutsuba"],"Count":2},{"value":["ムーンフォース","Moonforce"],"Count":2},{"value":["冥跡","Monumenthes"],"Count":2},{"value":["メタリオン","Metarion"],"Count":2},{"value":["焼肉","Yakiniku / Grilled Meat"],"Count":2},{"value":["野球","Baseball"],"Count":2},{"value":["八木ニック","🧑 Nick Yagi"],"Count":2},{"value":["ユウオウ","🧑 Yuo Goha"],"Count":2},{"value":["ユウカ","🧑 Yuka Goha"],"Count":2},{"value":["湧軍機","Molten Martial Machine"],"Count":2},{"value":["ユウジーン","🧑 Yujin Goha"],"Count":2},{"value":["ユウディアス・ベルギャー","🧑 Yudias Velgear"],"Count":2},{"value":["ユウラン","🧑 Yuran Goha"],"Count":2},{"value":["ユウロ","🧑 Yuro Goha"],"Count":2},{"value":["ユグドラゴ","Yggdrago"],"Count":2},{"value":["要塞クジラ","Fortress Whale"],"Count":2},{"value":["R・HERO","Rising HERO"],"Count":2},{"value":["ライトニング・ボルコンドル","Lightning Bolcondor"],"Count":2},{"value":["ラヴ","🧑 Love"],"Count":2},{"value":["竜宮トレモロ","🧑 Tremolo Ryugu"],"Count":2},{"value":["竜宮フェイザー","🧑 Phaser Ryugu"],"Count":2},{"value":["流聖のプリアージュ","Pliage the Sacred Shooting Star"],"Count":2},{"value":["ルーク","🧑 Lucidien “Luke” Kallister"],"Count":2},{"value":["霊使い","Charmer"],"Count":2},{"value":["レジェンド・マジシャン","Legend Magician"],"Count":2},{"value":["真紅眼の黒竜","Red-Eyes Black Dragon"],"Count":2},{"value":["ロイヤルデモンズ","Royal Rebel’s"],"Count":2},{"value":["ワイト","Skull Servant"],"Count":2},{"value":["Vi－FRND","Vi-FRND"],"Count":2},{"value":["ヴォイドアルヴ","Voidarve"],"Count":2},{"value":["ヴォイドヴェルグ","Voidvelgr"],"Count":2},{"value":["ヴォルカライズ","Volcalize"],"Count":2}];
+    const categoryTranslations = [{"value":["XYZ","XYZ"],"Count":2},{"value":["OTS","OuTerverSe"],"Count":2},{"value":["安立マニャ","🧑 Atachi Maniya"],"Count":2},{"value":["安立ミミ","🧑 Atachi Mimi"],"Count":2},{"value":["安立ヨシオ","🧑 Atachi Yoshio"],"Count":2},{"value":["アニマジカ","Animagica"],"Count":2},{"value":["アビスカイト","Abysskite"],"Count":2},{"value":["洗井新太","🧑 Arai Arata"],"Count":2},{"value":["アリ","Ant"],"Count":2},{"value":["有栖川ジャンゴ","🧑 Arisugawa Jango"],"Count":2},{"value":["暗黒騎士ガイア","Gaia the Fierce Knight"],"Count":2},{"value":["暗黒シャイン王アークトーク","Worker Warrior"],"Count":2},{"value":["アンティーク・ギア","Ancient Gear"],"Count":2},{"value":["アーツエンジェル","Art Angel"],"Count":2},{"value":["行手内造","🧑 Ikitenai Zo"],"Count":2},{"value":["イス","Chair"],"Count":2},{"value":["いとをかし","Grace Princess"],"Count":2},{"value":["海","Umi"],"Count":2},{"value":["エクスキューティー","Excutie"],"Count":2},{"value":["エポック","Epoch"],"Count":2},{"value":["焔魔","Blaze Fiend"],"Count":2},{"value":["王道遊歩","🧑 Odo Yuamu"],"Count":2},{"value":["王道遊我","🧑 Odo Yuga"],"Count":2},{"value":["王道遊飛","🧑 Odo Yuhi"],"Count":2},{"value":["大森麺三郎","🧑 Omori Menzaburo"],"Count":2},{"value":["お注射天使リリー","Injection Fairy Lily"],"Count":2},{"value":["御前乃ウシロウ","🧑 Omaeno Ushirou"],"Count":2},{"value":["オリジナル","Original"],"Count":2},{"value":["オーティス","🧑 Otisu"],"Count":2},{"value":["カイゾー","🧑 Kaizo"],"Count":2},{"value":["怪談","Kaidan / Ghost Story"],"Count":2},{"value":["カオス・ソルジャー","Black Luster Soldier"],"Count":2},{"value":["花牙","Shadow Flower"],"Count":2},{"value":["籠たま子","🧑 Kago Tamako"],"Count":2},{"value":["かっぱ","Kappa"],"Count":2},{"value":["火麺","Noodle Ninja"],"Count":2},{"value":["合羽井テル","🧑 Kawai Teru"],"Count":2},{"value":["ガクティング","🧑 Gakuting / DJ G!"],"Count":2},{"value":["ガジェット","Gadget"],"Count":2},{"value":["楽鬼","Music Princess"],"Count":2},{"value":["ガーゼット","Garzett"],"Count":2},{"value":["輝鋼超竜デヴァスター・オケアビス","Shinesteel Ultra Dragon Devastar Okeabyss"],"Count":2},{"value":["CAN：D","CAN:D"],"Count":2},{"value":["霧島ロア","🧑 Kirishima Roa"],"Count":2},{"value":["霧島ロミン","🧑 Kirishima Romin"],"Count":2},{"value":["霧島ロンドン","🧑 Kirishima London"],"Count":2},{"value":["霧島ロヴィアン","🧑 Kirishima Rovian"],"Count":2},{"value":["ギャラクティカ・オブリビオン","Galactica Oblivion"],"Count":2},{"value":["クァイドゥール・ベルギャー","🧑 Kuaidul Velgear"],"Count":2},{"value":["グラット石田","🧑 Guratto Ishida"],"Count":2},{"value":["グレート・モス","Great Moth"],"Count":2},{"value":["恵雷の精霊","Lightning Bringer"],"Count":2},{"value":["ケミカライズ","Chemicalize"],"Count":2},{"value":["幻壊","Destructor"],"Count":2},{"value":["幻書鳩の騎士ナイト・ヴィジョン","Night Vision the Phantom Pigeon"],"Count":2},{"value":["幻刃","Constructor"],"Count":2},{"value":["コスモス姫","Princess Cosmos"],"Count":2},{"value":["昆遁忍虫","Evasive Chaos Ninsect"],"Count":2},{"value":["後藤ハント","🧑 Goto Hanto"],"Count":2},{"value":["ゴーハ・ユウナ","🧑 Goha Yuna"],"Count":2},{"value":["西園寺ネイル","🧑 Saionji Neiru"],"Count":2},{"value":["最強戦旗","Ultimate Flag"],"Count":2},{"value":["彩光のプリマギターナ","Prima Guitarna the Shining Superstar"],"Count":2},{"value":["サイバースパイス","Cybersepice"],"Count":2},{"value":["サイバー・ドラゴン","Cyber Dragon"],"Count":2},{"value":["サンダービート","Thunderbeetle"],"Count":2},{"value":["ザイオン","🧑 Zaion"],"Count":2},{"value":["ザ☆ドラギアス","Dragias"],"Count":2},{"value":["ザ☆ニャンデスター","🧑 Meowdestar"],"Count":2},{"value":["ザ☆ルーグ","🧑 The Luug"],"Count":2},{"value":["精霊義賊","Shaman Bandit"],"Count":2},{"value":["シューバッハ","🧑 Schubel Quill"],"Count":2},{"value":["深淵海竜アビス・クラーケン","Abyssal Sea Dragon Abyss Kraken"],"Count":2},{"value":["深淵竜神アビス・ポセイドラ","Abyssal Dragon Lord Abyss Poseidra"],"Count":2},{"value":["真実爆郎","🧑 Shinjitsu Bakuro"],"Count":2},{"value":["CPT","Varivelgear CPT"],"Count":2},{"value":["邪犬","Mean Mutt"],"Count":2},{"value":["ジャージ・デビルズ","🧑 Planet Jersey Devil"],"Count":2},{"value":["獣機界","Beast Gear"],"Count":2},{"value":["ジョインテック","Jointech"],"Count":2},{"value":["人造人間","Jinzo"],"Count":2},{"value":["スイーツ過去子","🧑 Sweets Kakoko"],"Count":2},{"value":["寿司天使","Sushi Fairy"],"Count":2},{"value":["スターキャット","Star Cat"],"Count":2},{"value":["スターズハンド","Star's Hand"],"Count":2},{"value":["スパークハーツ","Sparkhearts"],"Count":2},{"value":["スピード","Speed"],"Count":2},{"value":["スーパーマキシマムトレモロガールズ","🧑 Super Maximum Tremolo Girls"],"Count":2},{"value":["スーパー・ウォー・ライオン","Super War-Lion"],"Count":2},{"value":["ズウィージョウ","🧑 Zuwijou Zwiru Berugya"],"Count":2},{"value":["聖麗","Sacred Splendor"],"Count":2},{"value":["セバスチャン","🧑 Sebasuchan"],"Count":2},{"value":["セブンスロード","Sevens Road"],"Count":2},{"value":["セレブローズ","Celeb Rose"],"Count":2},{"value":["千年の盾","Millennium Shield"],"Count":2},{"value":["絶望狂魔","Mad Fiend of Despair"],"Count":2},{"value":["ゼラ","Zera"],"Count":2},{"value":["蒼救","Skysavior"],"Count":2},{"value":["蒼月学人","🧑 Sogetsu Gakuto"],"Count":2},{"value":["蒼月マグト","🧑 Sogetsu Maguto"],"Count":2},{"value":["蒼月マナブ","🧑 Sogetsu Manabu"],"Count":2},{"value":["象明寺キャタピリオ","🧑 Zomyoji Kyatapirio"],"Count":2},{"value":["タイガー","🧑 Tiger / Kamijo Haruka"],"Count":2},{"value":["平月太","🧑 Taira Getta"],"Count":2},{"value":["田崎ギャリアン","🧑 Tazaki Gyarian"],"Count":2},{"value":["田崎さん","🧑 Tazaki Gyarikuson"],"Count":2},{"value":["タマボット","Tamabot"],"Count":2},{"value":["ダイスマイト","Dicemite"],"Count":2},{"value":["ダイナ－ミクス","Dynamix"],"Count":2},{"value":["ダークマイスター","Dark Meister"],"Count":2},{"value":["ダークマター","Dark Matter"],"Count":2},{"value":["ダークメン","Darkmen"],"Count":2},{"value":["チュパ太郎","🧑 Kaburagi Chupataro"],"Count":2},{"value":["帝王","Monarch"],"Count":2},{"value":["手乗りドラコ","Draco the Tiny"],"Count":2},{"value":["纏竜","Clad Dragon"],"Count":2},{"value":["ディアン・ケト","Dian Keto"],"Count":2},{"value":["ディノワ","🧑 Dinowa Berugya"],"Count":2},{"value":["デビルズ・ミラー","Fiend's Mirror"],"Count":2},{"value":["デーモンの召喚","Summoned Skull"],"Count":2},{"value":["トランザム・ライナック","Transam Linac"],"Count":2},{"value":["ドラギアス","Dragias"],"Count":2},{"value":["ドラゴニック","Dragonic"],"Count":2},{"value":["ナナホ","🧑 Nanahoshi Nanaho"],"Count":2},{"value":["七星テンテン","🧑 Nanahoshi Tenten"],"Count":2},{"value":["七星蘭世","🧑 Nanahoshi Ranze"],"Count":2},{"value":["七星ランラン","🧑 Nanahoshi Ranran"],"Count":2},{"value":["七星凛之介","🧑 Nanahoshi Rinnosuke"],"Count":2},{"value":["ヌードル宇宙子","🧑 Nudoru Sorako"],"Count":2},{"value":["N","Normal Monster"],"Count":2},{"value":["ネクメイド","Necromaid"],"Count":2},{"value":["猫山シュレディンガー","🧑 Nekoyama Shuredinga"],"Count":2},{"value":["ノムラトダマス","Nomuratodamas"],"Count":2},{"value":["ハイテクドラゴン","High Tech Dragon"],"Count":2},{"value":["ハイブリッドライブ","Hybridrive"],"Count":2},{"value":["白佛カン","🧑 Hakubutsu Kan"],"Count":2},{"value":["はぐれ使い魔","Straynge Cat"],"Count":2},{"value":["ハトラップ","🧑 Kayama Hatorappu"],"Count":2},{"value":["ハングリーバーガー","Hungry Burger"],"Count":2},{"value":["叛骨","Defiant Soul"],"Count":2},{"value":["ハンディーレディ","Handy Lady"],"Count":2},{"value":["ハーピィ","Harpie"],"Count":2},{"value":["バスター・ブレイダー","Buster Blader"],"Count":2},{"value":["バニシング・ヘリアカルライザー","Vanishing Heliacal Riser"],"Count":2},{"value":["秘密捜査官","Agent"],"Count":2},{"value":["火雷神サンダーボールド","Thunderbold, the Blazing Thunder"],"Count":2},{"value":["平森みつ子","🧑 Hiramori Mitsuko"],"Count":2},{"value":["HERO","HERO"],"Count":2},{"value":["ビック・バイパー","Gradius"],"Count":2},{"value":["F・G・D","Five-Headed Dragon"],"Count":2},{"value":["フィンガー地下子","🧑 Finga Chikako"],"Count":2},{"value":["フォローウィング・ワールド","Following World"],"Count":2},{"value":["フラッシュ海深子","Flash Umiko"],"Count":2},{"value":["ブラスデス","Brassdes"],"Count":2},{"value":["ブラックカオス","Black Chaos"],"Count":2},{"value":["ブラック・マジシャン","Dark Magician"],"Count":2},{"value":["青眼の白龍","Blue-Eyes White Dragon"],"Count":2},{"value":["プライム","Praime"],"Count":2},{"value":["P・M","Plasmatic"],"Count":2},{"value":["プリンセスG","Princess G"],"Count":2},{"value":["ベリーフレッシュ","Freshberry"],"Count":2},{"value":["報道","Reporter"],"Count":2},{"value":["ボチ","Bochi / Graves"],"Count":2},{"value":["巻寿司子","🧑 Maki Sushiko"],"Count":2},{"value":["マグナム・オーバーロード","Magnum Overlord"],"Count":2},{"value":["マグネット・ウォリアー","Magnet Warrior"],"Count":2},{"value":["マグロ","Maguro / Tuna"],"Count":2},{"value":["間黒七海","🧑 Maguro Nanami"],"Count":2},{"value":["魔将","Dark Shifter"],"Count":2},{"value":["魔法羊女メェ～グちゃん","Princess of the Flock"],"Count":2},{"value":["夢中","Delirium"],"Count":2},{"value":["六葉アサカ","🧑 Mutsuba Asaka"],"Count":2},{"value":["六葉アサナ","🧑 Mutsuba Asana"],"Count":2},{"value":["ムーンフォース","Moonforce"],"Count":2},{"value":["冥跡","Monumenthes"],"Count":2},{"value":["メタリオン","Metarion"],"Count":2},{"value":["焼肉","Yakiniku / Grilled Meat"],"Count":2},{"value":["野球","Baseball"],"Count":2},{"value":["八木ニック","🧑 Yagi Nikku"],"Count":2},{"value":["ユウオウ","🧑 Goha Yuuou"],"Count":2},{"value":["ユウカ","🧑 Goha Yuuka"],"Count":2},{"value":["湧軍機","Molten Martial Machine"],"Count":2},{"value":["ユウジーン","🧑 Goha Yuujin"],"Count":2},{"value":["ユウディアス・ベルギャー","🧑 Yuudiasu Berugya"],"Count":2},{"value":["ユウラン","🧑 Goha Yuran"],"Count":2},{"value":["ユウロ","🧑 Goha Yuro"],"Count":2},{"value":["ユグドラゴ","Yggdrago"],"Count":2},{"value":["要塞クジラ","Fortress Whale"],"Count":2},{"value":["R・HERO","Rising Hero"],"Count":2},{"value":["ライトニング・ボルコンドル","Lightning Voltcondor"],"Count":2},{"value":["ラヴ","Lovely"],"Count":2},{"value":["竜宮トレモロ","🧑 Ryugu Toremoro"],"Count":2},{"value":["竜宮フェイザー","🧑 Ryugu Phaser"],"Count":2},{"value":["流聖のプリアージュ","Pliage the Sacred Shooting Star"],"Count":2},{"value":["ルーク","🧑 Luke / Kamijo Tatsuhisa"],"Count":2},{"value":["霊使い","Charmer"],"Count":2},{"value":["レジェンド・マジシャン","Legendary Magician"],"Count":2},{"value":["真紅眼の黒竜","Red-Eyes Black Dragon"],"Count":2},{"value":["ロイヤルデモンズ","Royal Rebel's"],"Count":2},{"value":["ワイト","Skull Servant"],"Count":2},{"value":["Vi－FRND","Vi-FRND"],"Count":2},{"value":["ヴォイドアルヴ","Voidalfr"],"Count":2},{"value":["ヴォイドヴェルグ","Voidvelg"],"Count":2},{"value":["ヴォルカライズ","Volcalize"],"Count":2},{"value":["アイツ","Aitsu"],"Count":2}];
+
     const tagTranslations = [{"value":["公式紹介デッキ","Official Featured Decks"],"Count":2},{"value":["エリアチャンピオンシップ","Area Championship"],"Count":2},{"value":["ギャラクシーカップ","Galaxy Cup"],"Count":2},{"value":["トーナメントバトル","Tournament Battle"],"Count":2},{"value":["大会優勝デッキ/入賞デッキ","Tournament Winner/Placing Decks"],"Count":2},{"value":["インストラクターデッキ","Instructor Deck"],"Count":2},{"value":["みんなのおススメデッキ","Everyone\u0027s Recommended Decks"],"Count":2},{"value":["闇属性","DARK"],"Count":2},{"value":["光属性","LIGHT"],"Count":2},{"value":["水属性","WATER"],"Count":2},{"value":["炎属性","FIRE"],"Count":2},{"value":["地属性","EARTH"],"Count":2},{"value":["風属性","WIND"],"Count":2},{"value":["ドラゴン族","Dragon"],"Count":2},{"value":["アンデット族","Zombie"],"Count":2},{"value":["悪魔族","Fiend"],"Count":2},{"value":["炎族","Pyro"],"Count":2},{"value":["海竜族","Sea Serpent"],"Count":2},{"value":["岩石族","Rock"],"Count":2},{"value":["機械族","Machine"],"Count":2},{"value":["魚族","Fish"],"Count":2},{"value":["恐竜族","Dinosaur"],"Count":2},{"value":["昆虫族","Insect"],"Count":2},{"value":["獣族","Beast"],"Count":2},{"value":["獣戦士族","Beast-Warrior"],"Count":2},{"value":["植物族","Plant"],"Count":2},{"value":["水族","Aqua"],"Count":2},{"value":["戦士族","Warrior"],"Count":2},{"value":["鳥獣族","Winged Beast"],"Count":2},{"value":["天使族","Fairy"],"Count":2},{"value":["魔法使い族","Spellcaster"],"Count":2},{"value":["雷族","Thunder"],"Count":2},{"value":["爬虫類族","Reptile"],"Count":2},{"value":["サイキック族","Psychic"],"Count":2},{"value":["幻竜族","Wyrm"],"Count":2},{"value":["サイバース族","Cyberse"],"Count":2},{"value":["サイボーグ族","Cyborg"],"Count":2},{"value":["魔導騎士族","Magical Knight"],"Count":2},{"value":["ハイドラゴン族","High Dragon"],"Count":2},{"value":["天界戦士族","Celestial Warrior"],"Count":2},{"value":["オメガサイキック族","Omega Psychic"],"Count":2},{"value":["ギャラクシー族","Galaxy"],"Count":2},{"value":["オリジナル","Original"],"Count":2},{"value":["公式大会用","Official Tournament"],"Count":2}];
     const inlineTerms = {};
     const codeTerms = {
@@ -2635,6 +3650,8 @@
       "P・M": "Plasmatic"
     };
     const alwaysInlineTerms = {
+      "デッキタイプ": "Deck Type",
+      "最終更新日時": "Last Updated",
       "デッキ検索": "Deck Search",
       "条件を絞って検索": "Refine Search",
       "デッキレシピ記入シートをダウンロードする": "Download Deck Recipe Entry Sheet",
@@ -2698,6 +3715,10 @@
       "\u30e1\u30a4\u30f3\u30c7\u30c3\u30ad\u5408\u8a08": "Main Deck",
       "\u30a8\u30af\u30b9\u30c8\u30e9\u30c7\u30c3\u30ad\u5408\u8a08": "Extra Deck",
       "\u30b5\u30a4\u30c9\u30c7\u30c3\u30ad\u5408\u8a08": "Side Deck",
+      "\u767b\u9332\u9806": "Registration Order",
+      "\u540d\u524d\u9806": "Name Order",
+      "\u30ec\u30d9\u30eb\u9806": "Level Order",
+      "\u30b3\u30e1\u30f3\u30c8": "Comment",
     };
     const deckSearchMaps = getDeckSearchTranslationMaps();
     const roots = [
@@ -2724,6 +3745,9 @@
 
       textNodes.forEach((node) => {
         if (root.id === "article_body" && node.parentElement && node.parentElement.closest("#deck_text, #deck_detailtext, #deck_image")) {
+          return;
+        }
+        if (node.parentElement && node.parentElement.closest("#broad_title h1, span.biko")) {
           return;
         }
         if (node.parentElement && ["SCRIPT", "STYLE"].includes(node.parentElement.tagName)) {
@@ -3405,8 +4429,17 @@
         "font-size: 12px",
         "line-height: 1.35",
       ].join(";");
+      status.addEventListener("mouseenter", () => {
+        const messageNode = status.querySelector(".rushdb-yugipedia-status-message");
+        const truncated = messageNode
+          && (messageNode.scrollWidth > messageNode.clientWidth || messageNode.scrollHeight > messageNode.clientHeight);
+        status.title = truncated ? messageNode.textContent : "";
+      });
+      status.addEventListener("mouseleave", () => {
+        status.title = "";
+      });
 
-      const deckSearchControls = isLabelOnlyPage ? document.getElementById("rushdb-yugipedia-deck-search-controls") : null;
+      const deckSearchControls = usesFloatingControls ? document.getElementById("rushdb-yugipedia-deck-search-controls") : null;
       if (deckSearchControls) {
         deckSearchControls.prepend(status);
       } else {
@@ -3428,6 +4461,7 @@
       status.style.flexWrap = "wrap";
     }
     status.replaceChildren();
+    status.title = "";
 
     if (url) {
       const link = document.createElement("a");
@@ -3753,6 +4787,22 @@
     return isLabelOnlyPage ? "English translation is off. Click Auto English to turn it on." : "Yugipedia English translation is off. Click Auto English to turn it on.";
   }
 
+  function ensureFloatingControlsContainer() {
+    if (!usesGoogleFloatingControls || document.getElementById("rushdb-yugipedia-deck-search-controls")) {
+      return;
+    }
+    const anchor = document.querySelector("#broad_title");
+    if (!anchor) {
+      return;
+    }
+    const container = document.createElement("div");
+    container.id = "rushdb-yugipedia-deck-search-controls";
+    const rect = anchor.getBoundingClientRect();
+    container.style.top = `${Math.max(0, rect.bottom + window.scrollY + 4)}px`;
+    container.style.left = "0px";
+    document.body.appendChild(container);
+  }
+
   function createToggle(enabled) {
     if (document.getElementById("rushdb-yugipedia-english-toggle")) {
       return;
@@ -3822,12 +4872,22 @@
           if (isDeckSearchPage) {
             updateCategorySortToggleAvailability(true, await isCategorySortingEnabled());
           }
+          if (isGoogleDeckTextPage) {
+            updateGoogleDeckTranslationToggleAvailability(true, await isGoogleDeckTranslationEnabled());
+          }
           await translateCurrentTarget();
         } else {
           setVisualState(false);
           if (isDeckSearchPage) {
             updateCategorySortToggleAvailability(false, await isCategorySortingEnabled());
             restoreDeckSearchCategoryOrder();
+          }
+          if (isGoogleDeckTextPage) {
+            updateGoogleDeckTranslationToggleAvailability(false, await isGoogleDeckTranslationEnabled());
+            clearTimeout(googleTranslateAutoTimer);
+            cancelGoogleDeckTextTranslation();
+            restoreGoogleDeckTextTranslations();
+            closeGoogleTranslateWorkerWindow();
           }
           restoreCurrentTarget();
           setStatus(getTranslationOffStatusText());
@@ -3847,6 +4907,14 @@
     wrapper.append(checkmark, text);
     setVisualState(currentEnabled);
 
+    const floatingContainer = usesFloatingControls
+      ? document.getElementById("rushdb-yugipedia-deck-search-controls")
+      : null;
+    if (floatingContainer) {
+      floatingContainer.appendChild(wrapper);
+      return;
+    }
+
     const deckModeList = document.querySelector("#mode_set.tablink ul");
     if ((isDeckPage || isCardListPage) && deckModeList) {
       const item = document.createElement("li");
@@ -3865,20 +4933,6 @@
       item.appendChild(wrapper);
       languageList.appendChild(item);
       return;
-    }
-
-    if (isLabelOnlyPage) {
-      const anchor = document.querySelector("#broad_title");
-      if (anchor && anchor.parentNode) {
-        const container = document.createElement("div");
-        container.id = "rushdb-yugipedia-deck-search-controls";
-        const rect = anchor.getBoundingClientRect();
-        container.style.top = `${Math.max(0, rect.bottom + window.scrollY + 4)}px`;
-        container.style.left = "0px";
-        container.appendChild(wrapper);
-        document.body.appendChild(container);
-        return;
-      }
     }
 
     const anchor = document.querySelector("#cardname.cardname")
@@ -4000,6 +5054,370 @@
       : "Turn on Auto English to use the remembered Sort Lists setting";
   }
 
+  function createGoogleDeckTranslationReport(translationEnabled, googleEnabled) {
+    if (document.getElementById("rushdb-yugipedia-google-deck-report")) {
+      return;
+    }
+    const container = document.getElementById("rushdb-yugipedia-deck-search-controls");
+    if (!container) {
+      return;
+    }
+
+    const report = document.createElement("div");
+    report.id = "rushdb-yugipedia-google-deck-report";
+    report.setAttribute("role", "status");
+    report.setAttribute("aria-live", "polite");
+    report.addEventListener("mouseenter", () => {
+      const message = report.querySelector(".rushdb-yugipedia-google-report-message");
+      const truncated = message && (message.scrollWidth > message.clientWidth || message.scrollHeight > message.clientHeight);
+      report.title = truncated ? message.textContent : "";
+    });
+    report.addEventListener("mouseleave", () => {
+      report.title = "";
+    });
+    container.appendChild(report);
+
+    if (!translationEnabled) {
+      setGoogleDeckTranslationReport("Google translation is waiting for Auto English.");
+    } else if (!googleEnabled) {
+      setGoogleDeckTranslationReport("Google translation is off.");
+    } else {
+      setGoogleDeckTranslationReport("Google translation is ready.");
+    }
+  }
+
+  function createGoogleDeckTranslationControls(translationEnabled, googleEnabled, autoEnabled) {
+    createGoogleDeckTranslationReport(translationEnabled, googleEnabled);
+    createGoogleDeckTranslationToggle(googleEnabled);
+    createGoogleAutoTranslationToggle(autoEnabled);
+    updateGoogleDeckTranslationToggleAvailability(translationEnabled, googleEnabled);
+    installGoogleDeckCacheObserver();
+  }
+
+  function setGoogleDeckTranslationReport(message, isError) {
+    const report = document.getElementById("rushdb-yugipedia-google-deck-report");
+    if (!report) {
+      return;
+    }
+    const messageNode = document.createElement("span");
+    messageNode.className = "rushdb-yugipedia-google-report-message";
+    messageNode.textContent = message;
+    report.replaceChildren(messageNode);
+    addGoogleControlsMinimizeButton(report);
+    report.style.setProperty("border-color", isError ? "#a33" : "#0f5d8f", "important");
+    report.style.setProperty("background", isError ? "#fff0f0" : "#eef8ff", "important");
+    report.style.setProperty("color", isError ? "#7a1111" : "#10384f", "important");
+    report.title = "";
+  }
+
+  function addGoogleControlsMinimizeButton(report) {
+    if (!isDeckPage || !report) {
+      return;
+    }
+    const container = document.getElementById("rushdb-yugipedia-deck-search-controls");
+    if (!container) {
+      return;
+    }
+    const button = document.createElement("button");
+    button.type = "button";
+    button.id = "rushdb-yugipedia-google-minimize-controls";
+    button.textContent = "-";
+    button.title = "Hide Google translation controls";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      container.classList.add("rushdb-yugipedia-google-controls-minimized");
+      showGoogleControlsRestoreButton(container);
+    });
+    report.appendChild(button);
+  }
+
+  function showGoogleControlsRestoreButton(container) {
+    if (!container || document.getElementById("rushdb-yugipedia-google-restore-controls")) {
+      return;
+    }
+    const button = document.createElement("button");
+    button.type = "button";
+    button.id = "rushdb-yugipedia-google-restore-controls";
+    button.textContent = "+";
+    button.title = "Show Google translation controls";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      container.classList.remove("rushdb-yugipedia-google-controls-minimized");
+      button.remove();
+    });
+    container.appendChild(button);
+  }
+
+  function createCheckmarkToggleButton({ id, label, enabled, titleForState, style }) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.id = id;
+    if (style) {
+      button.style.cssText = style;
+    }
+
+    const checkmark = document.createElement("span");
+    checkmark.setAttribute("aria-hidden", "true");
+    checkmark.style.cssText = [
+      "display: inline-flex",
+      "align-items: center",
+      "justify-content: center",
+      "width: 14px",
+      "height: 14px",
+      "border: 1px solid #3a7ec7",
+      "border-radius: 2px",
+      "font-size: 12px",
+      "line-height: 1",
+      "box-sizing: border-box",
+      "font-weight: bold",
+    ].join(";");
+
+    const text = document.createElement("span");
+    text.textContent = label;
+    button.append(checkmark, text);
+
+    let currentEnabled = false;
+    const setVisualState = (nextEnabled) => {
+      currentEnabled = Boolean(nextEnabled);
+      button.setAttribute("aria-pressed", currentEnabled ? "true" : "false");
+      button.title = titleForState(currentEnabled);
+      checkmark.style.background = currentEnabled ? "#1687d9" : "#fff";
+      checkmark.style.color = currentEnabled ? "#fff" : "transparent";
+      checkmark.textContent = currentEnabled ? "\u2713" : "";
+    };
+
+    button.rushdbSetVisualState = setVisualState;
+    setVisualState(enabled);
+    return {
+      button,
+      isEnabled: () => currentEnabled,
+      setVisualState,
+    };
+  }
+
+  function createGoogleDeckTranslationToggle(enabled) {
+    if (document.getElementById("rushdb-yugipedia-google-deck-toggle")) {
+      return;
+    }
+
+    const container = document.getElementById("rushdb-yugipedia-deck-search-controls");
+    if (!container) {
+      return;
+    }
+
+    const row = document.createElement("div");
+    row.id = "rushdb-yugipedia-google-deck-row";
+    const toggle = createCheckmarkToggleButton({
+      id: "rushdb-yugipedia-google-deck-toggle",
+      label: "Google Translation",
+      enabled,
+      titleForState: (isEnabled) => isEnabled
+        ? "Cached and new Google translations are enabled"
+        : "Google translations are disabled",
+      style: [
+      "display: inline-flex",
+      "align-items: center",
+      "justify-content: center",
+      "gap: 6px",
+      "min-width: 168px",
+      "min-height: 26px",
+      "padding: 0 8px",
+      "border: 1px solid #777",
+      "border-radius: 4px",
+      "background: #fff",
+      "color: #222",
+      "font-size: 12px",
+      "line-height: 1.2",
+      "font-family: inherit",
+      "white-space: nowrap",
+      "cursor: pointer",
+      "user-select: none",
+      ].join(";"),
+    });
+    const { button, isEnabled, setVisualState } = toggle;
+    button.addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (button.disabled) {
+        return;
+      }
+
+      const nextEnabled = !isEnabled();
+      button.disabled = true;
+      try {
+        await setGoogleDeckTranslationEnabled(nextEnabled);
+        googleDeckTranslationEnabledState = nextEnabled;
+        setVisualState(nextEnabled);
+        if (nextEnabled) {
+          const cached = applyCachedGoogleDeckTextTranslations();
+          setGoogleDeckTranslationReport(cached > 0
+            ? `Applied ${cached} cached Google translation ${cached === 1 ? "entry" : "entries"}.`
+            : "Google translation is on. Use Translate Missing Text for uncached entries.");
+          scheduleAutomaticGoogleTranslation(0);
+        } else {
+          clearTimeout(googleTranslateAutoTimer);
+          cancelGoogleDeckTextTranslation();
+          restoreGoogleDeckTextTranslations();
+          closeGoogleTranslateWorkerWindow();
+          setGoogleDeckTranslationReport("Google translation is off.");
+        }
+        updateGoogleDeckTranslationToggleAvailability(await isTranslationEnabled(), nextEnabled);
+      } catch (error) {
+        console.error("[RushDB Yugipedia English]", error);
+        const storedEnabled = await isGoogleDeckTranslationEnabled();
+        setVisualState(storedEnabled);
+        updateGoogleDeckTranslationToggleAvailability(await isTranslationEnabled(), storedEnabled);
+        setGoogleDeckTranslationReport("Could not change the Google translation setting.", true);
+      } finally {
+        button.disabled = !(await isTranslationEnabled());
+      }
+    });
+
+    row.appendChild(button);
+    container.appendChild(row);
+    createGoogleDeckCacheButton(row);
+    createGoogleTranslateWindowButton(row);
+  }
+
+  function createGoogleTranslateWindowButton(row) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.id = "rushdb-yugipedia-google-window-open";
+    button.textContent = "Translate Missing Text";
+    button.title = isDeckPage
+      ? "Translate the uncached deck title first, then its comment"
+      : "Translate uncached deck names first, then descriptions";
+    button.addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      button.disabled = true;
+      try {
+        await startGoogleTranslationWorker();
+      } finally {
+        button.disabled = !(await isTranslationEnabled()) || !(await isGoogleDeckTranslationEnabled());
+      }
+    });
+    row.appendChild(button);
+  }
+
+  function createGoogleAutoTranslationToggle(enabled) {
+    const row = document.getElementById("rushdb-yugipedia-google-deck-row");
+    if (!row || document.getElementById("rushdb-yugipedia-google-auto-toggle")) {
+      return;
+    }
+    const { button, isEnabled, setVisualState } = createCheckmarkToggleButton({
+      id: "rushdb-yugipedia-google-auto-toggle",
+      label: "Auto Translate",
+      enabled,
+      titleForState: (isEnabled) => isEnabled
+        ? "Automatically translate uncached Japanese deck text"
+        : "Only translate uncached text when requested manually",
+    });
+    button.addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (button.disabled) {
+        return;
+      }
+      const nextEnabled = !isEnabled();
+      button.disabled = true;
+      try {
+        await setGoogleAutoTranslationEnabled(nextEnabled);
+        setVisualState(nextEnabled);
+        if (nextEnabled) {
+          scheduleAutomaticGoogleTranslation(0);
+        } else {
+          clearTimeout(googleTranslateAutoTimer);
+          googleTranslateAutoTimer = null;
+        }
+      } finally {
+        updateGoogleAutoTranslationToggleAvailability(
+          await isTranslationEnabled(),
+          await isGoogleDeckTranslationEnabled()
+        );
+      }
+    });
+
+    row.appendChild(button);
+  }
+
+  function updateGoogleAutoTranslationToggleAvailability(translationEnabled, googleEnabled) {
+    const button = document.getElementById("rushdb-yugipedia-google-auto-toggle");
+    if (!button) {
+      return;
+    }
+    button.disabled = !translationEnabled || !googleEnabled;
+    button.setAttribute("aria-disabled", button.disabled ? "true" : "false");
+    if (button.disabled) {
+      button.title = !translationEnabled
+        ? "Turn on Auto English first"
+        : "Turn on Google Translation first";
+    } else {
+      button.title = button.getAttribute("aria-pressed") === "true"
+        ? "Automatically translate uncached Japanese deck text"
+        : "Only translate uncached text when requested manually";
+    }
+  }
+
+  function createGoogleDeckCacheButton(row) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.id = "rushdb-yugipedia-google-cache-delete";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const deleted = deleteGoogleDeckTextCache();
+      updateGoogleDeckCacheButton();
+      setGoogleDeckTranslationReport(
+        `Deleted ${deleted} cached Google ${deleted === 1 ? "translation" : "translations"}.`
+      );
+    });
+    row.appendChild(button);
+    updateGoogleDeckCacheButton();
+  }
+
+  function updateGoogleDeckCacheButton() {
+    const button = document.getElementById("rushdb-yugipedia-google-cache-delete");
+    if (!button) {
+      return;
+    }
+    const stats = pruneGoogleDeckTextCache();
+    button.textContent = `Clear Translation Cache (${formatBytes(stats.bytes)})`;
+    button.title = `Clear ${stats.count} cached Google ${stats.count === 1 ? "translation" : "translations"} (${formatBytes(stats.bytes)})`;
+  }
+
+  function updateGoogleDeckTranslationToggleAvailability(translationEnabled, googleEnabled) {
+    googleDeckTranslationEnabledState = Boolean(googleEnabled);
+    const button = document.getElementById("rushdb-yugipedia-google-deck-toggle");
+    if (!button) {
+      return;
+    }
+
+    if (typeof button.rushdbSetVisualState === "function") {
+      button.rushdbSetVisualState(Boolean(googleEnabled));
+    }
+    button.disabled = !translationEnabled;
+    button.setAttribute("aria-disabled", translationEnabled ? "false" : "true");
+    if (!translationEnabled) {
+      button.title = "Turn on Auto English to use Google Translation";
+      setGoogleDeckTranslationReport("Google translation is waiting for Auto English.");
+    } else if (!googleEnabled) {
+      setGoogleDeckTranslationReport("Google translation is off.");
+    }
+    updateGoogleAutoTranslationToggleAvailability(translationEnabled, googleEnabled);
+    const workerButton = document.getElementById("rushdb-yugipedia-google-window-open");
+    if (workerButton) {
+      workerButton.disabled = !translationEnabled || !googleEnabled;
+      workerButton.title = workerButton.disabled
+        ? (!translationEnabled ? "Turn on Auto English first" : "Turn on Google Translation first")
+        : (isDeckPage
+          ? "Translate the uncached deck title first, then its comment"
+          : "Translate uncached deck names first, then descriptions");
+    }
+  }
+
   function createDeleteCacheButton() {
     if (document.getElementById("rushdb-yugipedia-delete-cache")) {
       return;
@@ -4038,7 +5456,8 @@
       event.stopPropagation();
       const deleted = deleteRushDbCache();
       updateDeleteCacheButton(button);
-      setStatus(`Deleted ${deleted} cached Auto English ${deleted === 1 ? "entry" : "entries"}.`);
+      updateGoogleDeckCacheButton();
+      setStatus(`Clear ${deleted} cached Card ${deleted === 1 ? "entry" : "entries"}.`);
     });
 
     container.appendChild(button);
@@ -4046,12 +5465,12 @@
 
   function updateDeleteCacheButton(button) {
     const stats = getRushDbCacheStats();
-    button.textContent = `Delete Cache (${formatBytes(stats.bytes)})`;
+    button.textContent = `Clear Card Cache (${formatBytes(stats.bytes)})`;
     button.title = `Delete ${stats.count} cached Auto English ${stats.count === 1 ? "entry" : "entries"} (${formatBytes(stats.bytes)})`;
   }
 
   function addSearchControlsMinimizeButton(status) {
-    if (!isLabelOnlyPage || !status || status.querySelector("#rushdb-yugipedia-minimize-controls")) {
+    if (!usesFloatingControls || !status || status.querySelector("#rushdb-yugipedia-minimize-controls")) {
       return;
     }
 
@@ -4105,7 +5524,7 @@
   }
 
   async function applyStoredSearchControlsMinimizedState() {
-    if (!isLabelOnlyPage || !await isSearchControlsMinimized()) {
+    if (!usesFloatingControls || !await isSearchControlsMinimized()) {
       return;
     }
 
@@ -4317,7 +5736,7 @@
       }
 
       #rushdb-yugipedia-deck-search-controls #rushdb-yugipedia-version-notice {
-        order: 2 !important;
+        order: 4 !important;
         flex: 0 0 100% !important;
         width: 100% !important;
         max-width: 100% !important;
@@ -4343,6 +5762,166 @@
         order: 1 !important;
         flex: 0 0 auto !important;
         box-sizing: border-box !important;
+        pointer-events: auto !important;
+      }
+
+      #rushdb-yugipedia-deck-search-controls #rushdb-yugipedia-google-deck-row {
+        order: 3 !important;
+        display: flex !important;
+        flex-wrap: wrap !important;
+        gap: 6px !important;
+        flex: 0 0 100% !important;
+        width: 100% !important;
+        min-height: 26px !important;
+        box-sizing: border-box !important;
+        pointer-events: none !important;
+      }
+
+      #rushdb-yugipedia-deck-search-controls.rushdb-yugipedia-google-controls-minimized #rushdb-yugipedia-google-deck-row,
+      #rushdb-yugipedia-deck-search-controls.rushdb-yugipedia-google-controls-minimized #rushdb-yugipedia-google-deck-report {
+        display: none !important;
+      }
+
+      #rushdb-yugipedia-deck-search-controls #rushdb-yugipedia-google-deck-report {
+        order: 2 !important;
+        display: flex !important;
+        align-items: center !important;
+        gap: 6px !important;
+        flex: 0 0 100% !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        min-height: 26px !important;
+        box-sizing: border-box !important;
+        padding: 5px 8px !important;
+        border: 1px solid #0f5d8f !important;
+        border-radius: 3px !important;
+        background: #eef8ff !important;
+        color: #10384f !important;
+        font-size: 12px !important;
+        line-height: 1.25 !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        pointer-events: auto !important;
+      }
+
+      #rushdb-yugipedia-google-deck-report .rushdb-yugipedia-google-report-message {
+        flex: 1 1 auto !important;
+        min-width: 0 !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        white-space: nowrap !important;
+      }
+
+      #rushdb-yugipedia-google-minimize-controls {
+        flex: 0 0 22px !important;
+        width: 22px !important;
+        min-width: 22px !important;
+        height: 20px !important;
+        padding: 0 !important;
+        border: 1px solid #0f5d8f !important;
+        border-radius: 3px !important;
+        background: #ffffff !important;
+        color: #10384f !important;
+        font-size: 14px !important;
+        font-weight: bold !important;
+        line-height: 18px !important;
+        text-align: center !important;
+        cursor: pointer !important;
+        pointer-events: auto !important;
+      }
+
+      #rushdb-yugipedia-google-restore-controls {
+        flex: 0 0 28px !important;
+        width: 28px !important;
+        min-width: 28px !important;
+        height: 28px !important;
+        padding: 0 !important;
+        border: 1px solid #0f5d8f !important;
+        border-left: 0 !important;
+        border-radius: 0 4px 4px 0 !important;
+        background: #eef8ff !important;
+        color: #10384f !important;
+        font-size: 18px !important;
+        font-weight: bold !important;
+        line-height: 26px !important;
+        text-align: center !important;
+        cursor: pointer !important;
+        pointer-events: auto !important;
+      }
+
+      #rushdb-yugipedia-deck-search-controls #rushdb-yugipedia-google-deck-toggle {
+        width: 168px !important;
+        min-width: 168px !important;
+        box-sizing: border-box !important;
+        white-space: nowrap !important;
+        pointer-events: auto !important;
+      }
+
+      #rushdb-yugipedia-deck-search-controls #rushdb-yugipedia-google-cache-delete {
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        width: 218px !important;
+        min-width: 218px !important;
+        min-height: 26px !important;
+        box-sizing: border-box !important;
+        padding: 0 8px !important;
+        border: 1px solid #777 !important;
+        border-radius: 4px !important;
+        background: #fff !important;
+        color: #222 !important;
+        font-size: 12px !important;
+        line-height: 1.2 !important;
+        font-family: inherit !important;
+        white-space: nowrap !important;
+        cursor: pointer !important;
+        user-select: none !important;
+        pointer-events: auto !important;
+      }
+
+      #rushdb-yugipedia-deck-search-controls #rushdb-yugipedia-google-window-open {
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        width: 224px !important;
+        min-width: 224px !important;
+        min-height: 26px !important;
+        box-sizing: border-box !important;
+        padding: 0 8px !important;
+        border: 1px solid #1a73e8 !important;
+        border-radius: 4px !important;
+        background: #1a73e8 !important;
+        color: #fff !important;
+        font-size: 12px !important;
+        line-height: 1.2 !important;
+        font-family: inherit !important;
+        white-space: nowrap !important;
+        cursor: pointer !important;
+        user-select: none !important;
+        pointer-events: auto !important;
+      }
+
+      #rushdb-yugipedia-deck-search-controls #rushdb-yugipedia-google-auto-toggle {
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        gap: 6px !important;
+        width: 162px !important;
+        min-width: 162px !important;
+        min-height: 26px !important;
+        box-sizing: border-box !important;
+        padding: 0 8px !important;
+        border: 1px solid #777 !important;
+        border-radius: 4px !important;
+        background: #fff !important;
+        color: #222 !important;
+        font-size: 12px !important;
+        line-height: 1.2 !important;
+        font-family: inherit !important;
+        white-space: nowrap !important;
+        cursor: pointer !important;
+        user-select: none !important;
         pointer-events: auto !important;
       }
 
@@ -4372,6 +5951,22 @@
       #rushdb-yugipedia-category-sort-toggle:hover,
       #rushdb-yugipedia-category-sort-toggle:focus,
       #rushdb-yugipedia-category-sort-toggle:active,
+      #rushdb-yugipedia-google-deck-toggle,
+      #rushdb-yugipedia-google-deck-toggle:hover,
+      #rushdb-yugipedia-google-deck-toggle:focus,
+      #rushdb-yugipedia-google-deck-toggle:active,
+      #rushdb-yugipedia-google-cache-delete,
+      #rushdb-yugipedia-google-cache-delete:hover,
+      #rushdb-yugipedia-google-cache-delete:focus,
+      #rushdb-yugipedia-google-cache-delete:active,
+      #rushdb-yugipedia-google-window-open,
+      #rushdb-yugipedia-google-window-open:hover,
+      #rushdb-yugipedia-google-window-open:focus,
+      #rushdb-yugipedia-google-window-open:active,
+      #rushdb-yugipedia-google-auto-toggle,
+      #rushdb-yugipedia-google-auto-toggle:hover,
+      #rushdb-yugipedia-google-auto-toggle:focus,
+      #rushdb-yugipedia-google-auto-toggle:active,
       #rushdb-yugipedia-delete-cache,
       #rushdb-yugipedia-delete-cache:hover,
       #rushdb-yugipedia-delete-cache:focus,
@@ -4390,7 +5985,15 @@
       #rushdb-yugipedia-category-sort-toggle[aria-pressed="true"] > span:first-child,
       #rushdb-yugipedia-category-sort-toggle[aria-pressed="true"]:hover > span:first-child,
       #rushdb-yugipedia-category-sort-toggle[aria-pressed="true"]:focus > span:first-child,
-      #rushdb-yugipedia-category-sort-toggle[aria-pressed="true"]:active > span:first-child {
+      #rushdb-yugipedia-category-sort-toggle[aria-pressed="true"]:active > span:first-child,
+      #rushdb-yugipedia-google-deck-toggle[aria-pressed="true"] > span:first-child,
+      #rushdb-yugipedia-google-deck-toggle[aria-pressed="true"]:hover > span:first-child,
+      #rushdb-yugipedia-google-deck-toggle[aria-pressed="true"]:focus > span:first-child,
+      #rushdb-yugipedia-google-deck-toggle[aria-pressed="true"]:active > span:first-child,
+      #rushdb-yugipedia-google-auto-toggle[aria-pressed="true"] > span:first-child,
+      #rushdb-yugipedia-google-auto-toggle[aria-pressed="true"]:hover > span:first-child,
+      #rushdb-yugipedia-google-auto-toggle[aria-pressed="true"]:focus > span:first-child,
+      #rushdb-yugipedia-google-auto-toggle[aria-pressed="true"]:active > span:first-child {
         background: #1687d9 !important;
         color: #ffffff !important;
         border-color: #3a7ec7 !important;
@@ -4403,7 +6006,15 @@
       #rushdb-yugipedia-category-sort-toggle[aria-pressed="false"] > span:first-child,
       #rushdb-yugipedia-category-sort-toggle[aria-pressed="false"]:hover > span:first-child,
       #rushdb-yugipedia-category-sort-toggle[aria-pressed="false"]:focus > span:first-child,
-      #rushdb-yugipedia-category-sort-toggle[aria-pressed="false"]:active > span:first-child {
+      #rushdb-yugipedia-category-sort-toggle[aria-pressed="false"]:active > span:first-child,
+      #rushdb-yugipedia-google-deck-toggle[aria-pressed="false"] > span:first-child,
+      #rushdb-yugipedia-google-deck-toggle[aria-pressed="false"]:hover > span:first-child,
+      #rushdb-yugipedia-google-deck-toggle[aria-pressed="false"]:focus > span:first-child,
+      #rushdb-yugipedia-google-deck-toggle[aria-pressed="false"]:active > span:first-child,
+      #rushdb-yugipedia-google-auto-toggle[aria-pressed="false"] > span:first-child,
+      #rushdb-yugipedia-google-auto-toggle[aria-pressed="false"]:hover > span:first-child,
+      #rushdb-yugipedia-google-auto-toggle[aria-pressed="false"]:focus > span:first-child,
+      #rushdb-yugipedia-google-auto-toggle[aria-pressed="false"]:active > span:first-child {
         background: #ffffff !important;
         color: transparent !important;
         border-color: #3a7ec7 !important;
@@ -4417,6 +6028,15 @@
       #rushdb-yugipedia-category-sort-toggle:hover > span:not(:first-child),
       #rushdb-yugipedia-category-sort-toggle:focus > span:not(:first-child),
       #rushdb-yugipedia-category-sort-toggle:active > span:not(:first-child),
+      #rushdb-yugipedia-google-deck-toggle > span:not(:first-child),
+      #rushdb-yugipedia-google-deck-toggle:hover > span:not(:first-child),
+      #rushdb-yugipedia-google-deck-toggle:focus > span:not(:first-child),
+      #rushdb-yugipedia-google-deck-toggle:active > span:not(:first-child),
+      #rushdb-yugipedia-google-auto-toggle > span:not(:first-child),
+      #rushdb-yugipedia-google-auto-toggle:hover > span:not(:first-child),
+      #rushdb-yugipedia-google-auto-toggle:focus > span:not(:first-child),
+      #rushdb-yugipedia-google-auto-toggle:active > span:not(:first-child),
+      #rushdb-yugipedia-google-cache-delete,
       #rushdb-yugipedia-delete-cache {
         color: #111111 !important;
         display: inline !important;
@@ -4429,6 +6049,23 @@
       #rushdb-yugipedia-category-sort-toggle:disabled:hover,
       #rushdb-yugipedia-category-sort-toggle:disabled:focus,
       #rushdb-yugipedia-category-sort-toggle:disabled:active {
+        cursor: not-allowed !important;
+        opacity: 0.55 !important;
+      }
+
+      #rushdb-yugipedia-google-deck-toggle:disabled,
+      #rushdb-yugipedia-google-deck-toggle:disabled:hover,
+      #rushdb-yugipedia-google-deck-toggle:disabled:focus,
+      #rushdb-yugipedia-google-deck-toggle:disabled:active {
+        cursor: not-allowed !important;
+        opacity: 0.55 !important;
+      }
+
+      #rushdb-yugipedia-google-auto-toggle:disabled,
+      #rushdb-yugipedia-google-auto-toggle:disabled:hover,
+      #rushdb-yugipedia-google-auto-toggle:disabled:focus,
+      #rushdb-yugipedia-google-auto-toggle:disabled:active,
+      #rushdb-yugipedia-google-window-open:disabled {
         cursor: not-allowed !important;
         opacity: 0.55 !important;
       }
@@ -4479,6 +6116,24 @@
     await setStoredValue(SORT_CATEGORIES_KEY, enabled ? "1" : "0");
   }
 
+  async function isGoogleDeckTranslationEnabled() {
+    const value = await getStoredValue(GOOGLE_DECK_TRANSLATION_KEY, "1");
+    return value !== "0";
+  }
+
+  async function setGoogleDeckTranslationEnabled(enabled) {
+    await setStoredValue(GOOGLE_DECK_TRANSLATION_KEY, enabled ? "1" : "0");
+  }
+
+  async function isGoogleAutoTranslationEnabled() {
+    const value = await getStoredValue(GOOGLE_AUTO_TRANSLATION_KEY, "0");
+    return value === "1";
+  }
+
+  async function setGoogleAutoTranslationEnabled(enabled) {
+    await setStoredValue(GOOGLE_AUTO_TRANSLATION_KEY, enabled ? "1" : "0");
+  }
+
   async function isSearchControlsMinimized() {
     const value = await getStoredValue(CONTROLS_MINIMIZED_KEY, "0");
     return value === "1";
@@ -4488,6 +6143,93 @@
     setStoredValue(CONTROLS_MINIMIZED_KEY, minimized ? "1" : "0").catch((error) => {
       console.warn("[RushDB Yugipedia English] Could not save minimized controls state", error);
     });
+  }
+
+  async function getSharedGoogleJob(key) {
+    let raw;
+    if (typeof GM !== "undefined" && GM.getValue) {
+      raw = await GM.getValue(key);
+    } else if (typeof GM_getValue !== "undefined") {
+      raw = GM_getValue(key);
+    } else {
+      throw new Error("Shared userscript storage is required for the Google Translate window.");
+    }
+    if (raw === undefined || raw === null || raw === "") {
+      return null;
+    }
+    try {
+      return typeof raw === "string" ? JSON.parse(raw) : raw;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  async function setSharedGoogleJob(key, job) {
+    const raw = JSON.stringify(job);
+    if (typeof GM !== "undefined" && GM.setValue) {
+      await GM.setValue(key, raw);
+      return;
+    }
+    if (typeof GM_setValue !== "undefined") {
+      GM_setValue(key, raw);
+      return;
+    }
+    throw new Error("Shared userscript storage is required for the Google Translate window.");
+  }
+
+  async function clearSharedGoogleJob(key) {
+    if (typeof GM !== "undefined" && GM.deleteValue) {
+      await GM.deleteValue(key);
+      return;
+    }
+    if (typeof GM_deleteValue !== "undefined") {
+      GM_deleteValue(key);
+      return;
+    }
+    if (typeof GM !== "undefined" && GM.setValue) {
+      await GM.setValue(key, "");
+      return;
+    }
+    if (typeof GM_setValue !== "undefined") {
+      GM_setValue(key, "");
+    }
+  }
+
+  async function listSharedGoogleJobKeys() {
+    if (typeof GM !== "undefined" && GM.listValues) {
+      return await GM.listValues();
+    }
+    if (typeof GM_listValues !== "undefined") {
+      return GM_listValues();
+    }
+    return [GOOGLE_TRANSLATE_ACTIVE_JOB_KEY];
+  }
+
+  async function cleanupStaleGoogleTranslateJobs() {
+    const now = Date.now();
+    let keys = [];
+    try {
+      keys = await listSharedGoogleJobKeys();
+    } catch (_error) {
+      keys = [GOOGLE_TRANSLATE_ACTIVE_JOB_KEY];
+    }
+    if (!keys.includes(GOOGLE_TRANSLATE_ACTIVE_JOB_KEY)) {
+      keys.push(GOOGLE_TRANSLATE_ACTIVE_JOB_KEY);
+    }
+    const jobKeys = keys.filter((key) => {
+      return key === GOOGLE_TRANSLATE_ACTIVE_JOB_KEY || key.startsWith(GOOGLE_TRANSLATE_JOB_PREFIX);
+    });
+    await Promise.all(jobKeys.map(async (key) => {
+      try {
+        const job = await getSharedGoogleJob(key);
+        const timestamp = Number(job && (job.finishedAt || job.completedAt || job.createdAt)) || 0;
+        if (!job || !timestamp || now - timestamp > GOOGLE_TRANSLATE_JOB_MAX_AGE_MS) {
+          await clearSharedGoogleJob(key);
+        }
+      } catch (_error) {
+        // Stale-job cleanup is best-effort.
+      }
+    }));
   }
 
   async function getStoredValue(key, defaultValue) {
@@ -4651,7 +6393,11 @@
     if (!key || !key.startsWith(CACHE_PREFIX)) {
       return false;
     }
-    return key !== ENABLED_KEY && key !== SORT_CATEGORIES_KEY && key !== CONTROLS_MINIMIZED_KEY;
+    return key !== ENABLED_KEY
+      && key !== SORT_CATEGORIES_KEY
+      && key !== GOOGLE_DECK_TRANSLATION_KEY
+      && key !== GOOGLE_AUTO_TRANSLATION_KEY
+      && key !== CONTROLS_MINIMIZED_KEY;
   }
 
   function formatBytes(bytes) {
@@ -4702,4 +6448,3 @@
     }
   }
 })();
-
