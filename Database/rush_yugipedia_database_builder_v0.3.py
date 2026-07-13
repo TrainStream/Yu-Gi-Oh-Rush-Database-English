@@ -623,7 +623,7 @@ def get_display_data(title: str, fields: Dict[str, str]) -> Dict[str, Any]:
     ]
     preface = [item for item in preface if item]
     return {
-        "title": clean_wiki_text(title),
+        "title": clean_wiki_text(fields.get("name") or title),
         "cardType": card_type,
         "property": property_value,
         "attribute": attribute,
@@ -995,6 +995,17 @@ class Database:
         with self.lock:
             return list(self.conn.execute("SELECT title, kind FROM failures ORDER BY last_attempt_at DESC"))
 
+    def failure_counts(self) -> Tuple[int, int, int]:
+        with self.lock:
+            row = self.conn.execute("""
+                SELECT
+                    SUM(CASE WHEN kind = 'card' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN kind = 'product' THEN 1 ELSE 0 END),
+                    COUNT(*)
+                FROM failures
+            """).fetchone()
+        return int(row[0] or 0), int(row[1] or 0), int(row[2] or 0)
+
     def empty_set_product_titles(self) -> List[Tuple[str, str]]:
         with self.lock:
             return [
@@ -1324,10 +1335,15 @@ class BuilderWorker:
                     self.process_targets(db, targets, None, skip_unchanged)
                 card_count, set_count = db.export_json(json_path)
                 xlsx_count = db.export_xlsx(xlsx_path)
+                failed_cards, failed_products, total_failures = db.failure_counts()
             finally:
                 db.close()
             self.app.log(f"Exported {card_count} cards and {set_count} sets to {json_path}")
             self.app.log(f"Exported {xlsx_count} card rows to {xlsx_path}")
+            self.app.log(
+                f"Failures remaining: {failed_cards} cards, "
+                f"{failed_products} products/sets ({total_failures} total)"
+            )
             self.app.worker_done()
         except StopRequested:
             self.app.log("Stopped by user.")
@@ -1656,8 +1672,13 @@ def run_cli(args: argparse.Namespace) -> None:
 
         card_count, set_count = db.export_json(os.path.join(output_dir, DEFAULT_JSON_NAME))
         xlsx_count = db.export_xlsx(os.path.join(output_dir, DEFAULT_XLSX_NAME))
+        failed_cards, failed_products, total_failures = db.failure_counts()
         log(f"Exported {card_count} cards and {set_count} sets")
         log(f"Exported {xlsx_count} card rows to {os.path.join(output_dir, DEFAULT_XLSX_NAME)}")
+        log(
+            f"Failures remaining: {failed_cards} cards, "
+            f"{failed_products} products/sets ({total_failures} total)"
+        )
     finally:
         db.close()
 
