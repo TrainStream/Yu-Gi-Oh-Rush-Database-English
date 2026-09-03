@@ -8377,6 +8377,11 @@
       "japanese_name": ""
     },
     {
+      "id": 160026030,
+      "name": "Powerful Machine Clockwork Walker",
+      "japanese_name": ""
+    },
+    {
       "id": 160026031,
       "name": "The Sacred Spear of Arthenée",
       "japanese_name": ""
@@ -8389,6 +8394,11 @@
     {
       "id": 160026033,
       "name": "Arthenée the Defender of Sacred Silence",
+      "japanese_name": ""
+    },
+    {
+      "id": 160026034,
+      "name": "Red-Eyes Mars Dragon",
       "japanese_name": ""
     },
     {
@@ -8507,8 +8517,28 @@
       "japanese_name": ""
     },
     {
+      "id": 160026058,
+      "name": "Sacred War of Arthenée",
+      "japanese_name": ""
+    },
+    {
       "id": 160026059,
       "name": "Instant Gift",
+      "japanese_name": ""
+    },
+    {
+      "id": 160026060,
+      "name": "Final Ritual of the Ancients (Rush)",
+      "japanese_name": ""
+    },
+    {
+      "id": 160026061,
+      "name": "Midnight Reading",
+      "japanese_name": ""
+    },
+    {
+      "id": 160026062,
+      "name": "Rebel's Dive",
       "japanese_name": ""
     },
     {
@@ -8539,6 +8569,11 @@
     {
       "id": 160026068,
       "name": "Elemental HERO Earth Neos",
+      "japanese_name": ""
+    },
+    {
+      "id": 160026069,
+      "name": "Reshef the Dark Being (Rush)",
       "japanese_name": ""
     },
     {
@@ -13062,6 +13097,96 @@
       "japanese_name": "Ｚ－メタル・キャタピラー"
     },
     {
+      "id": 160220001,
+      "name": "Dark Magician Girl the Dragon Knight (Rush)",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220006,
+      "name": "Dark Magician Knight (Rush)",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220008,
+      "name": "Pitch-Dark Eradicator Sorcerer",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220015,
+      "name": "The Allied Dark Magicians",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220016,
+      "name": "The United Front with Timaeus",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220017,
+      "name": "Knight's Title (Rush)",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220019,
+      "name": "The Sleeping Nameless Dragon",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220021,
+      "name": "Wako Gozen Riletta",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220022,
+      "name": "Waso Gozen Linker",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220024,
+      "name": "Dimension Riletta",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220025,
+      "name": "Dimension Oper",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220027,
+      "name": "Dimension Channel",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220029,
+      "name": "Nehime the Dimensional Sworn Ally",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220030,
+      "name": "Dimension Pair Link L",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220031,
+      "name": "Dimension Pair Link R",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220032,
+      "name": "Dimension Jump",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220034,
+      "name": "Fuden Issen",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220085,
+      "name": "Amulet Dragon (Rush)",
+      "japanese_name": ""
+    },
+    {
       "id": 160301002,
       "name": "Windcaster Torna",
       "japanese_name": "風使いトルネ"
@@ -14469,6 +14594,11 @@
     {
       "id": 160402066,
       "name": "Chaoskampf Beast Leviatriton",
+      "japanese_name": ""
+    },
+    {
+      "id": 160402067,
+      "name": "Crystal Seer (Rush)",
       "japanese_name": ""
     },
     {
