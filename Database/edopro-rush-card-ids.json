@@ -6392,6 +6392,11 @@
       "japanese_name": "魂を喰らう者 バズー"
     },
     {
+      "id": 160020040,
+      "name": "Bazoo the Soul-Eater (Rush)",
+      "japanese_name": "魂を喰らう者 バズー"
+    },
+    {
       "id": 160020041,
       "name": "Chaos Sentinel",
       "japanese_name": "カオス・センチネル"
@@ -13112,6 +13117,16 @@
       "japanese_name": ""
     },
     {
+      "id": 160220012,
+      "name": "Blackland Magic Dragon",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220013,
+      "name": "Returnee of the Temple",
+      "japanese_name": ""
+    },
+    {
       "id": 160220015,
       "name": "The Allied Dark Magicians",
       "japanese_name": ""
@@ -13177,8 +13192,93 @@
       "japanese_name": ""
     },
     {
+      "id": 160220033,
+      "name": "Searching Fuden",
+      "japanese_name": ""
+    },
+    {
       "id": 160220034,
       "name": "Fuden Issen",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220035,
+      "name": "Cross Lostream Verdias",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220036,
+      "name": "Cross Lostream Melutine",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220037,
+      "name": "Lostream Nemora",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220038,
+      "name": "Lostream Nepia",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220040,
+      "name": "Lostream Polka",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220041,
+      "name": "Lostream Myura",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220042,
+      "name": "Lostream Gift",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220044,
+      "name": "Lostream Record",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220045,
+      "name": "Lostream - The Circulating Sea of Clouds",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220046,
+      "name": "Lostream Stream",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220047,
+      "name": "The Flame Dragon Haunting the Temple",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220048,
+      "name": "The Black Witch Facing the Temple",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220049,
+      "name": "Sinful Spoils of Doom - Rciela (Rush)",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220050,
+      "name": "In a Corner of the Underground City",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220060,
+      "name": "Grand Legendary Party",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220061,
+      "name": "Legendary Party",
       "japanese_name": ""
     },
     {
@@ -14599,6 +14699,11 @@
     {
       "id": 160402067,
       "name": "Crystal Seer (Rush)",
+      "japanese_name": ""
+    },
+    {
+      "id": 160402068,
+      "name": "Lostream Nereides",
       "japanese_name": ""
     },
     {
