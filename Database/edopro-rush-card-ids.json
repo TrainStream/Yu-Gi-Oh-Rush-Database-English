@@ -13102,6 +13102,11 @@
       "japanese_name": "Ｚ－メタル・キャタピラー"
     },
     {
+      "id": 160220000,
+      "name": "The Mysterious Liliputians",
+      "japanese_name": ""
+    },
+    {
       "id": 160220001,
       "name": "Dark Magician Girl the Dragon Knight (Rush)",
       "japanese_name": ""
@@ -13269,6 +13274,26 @@
     {
       "id": 160220050,
       "name": "In a Corner of the Underground City",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220051,
+      "name": "Liliputian Friends",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220052,
+      "name": "The Very Kind Human",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220053,
+      "name": "The Connected Liliputians",
+      "japanese_name": ""
+    },
+    {
+      "id": 160220054,
+      "name": "The Nomnom Liliputian",
       "japanese_name": ""
     },
     {
